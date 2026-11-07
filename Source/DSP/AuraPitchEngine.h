@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "LockFreePitchFifo.h"
@@ -99,7 +100,7 @@ public:
         curve.reset();
         psola.reset();
         studio.reset();
-        track.reset();
+        track->reset();
         counter = 0;
         studioEpoch = 0;
         activeMode = pendingMode = params.mode;
@@ -115,7 +116,7 @@ public:
     int getLatencySamples() const noexcept                   { return getLatencySamples (pendingMode); }
     int getLatencySamples (TrackingMode m) const noexcept    { return m == TrackingMode::Live ? liveLatency : studioLatency; }
     TrackingMode getActiveMode() const noexcept              { return activeMode; }
-    LockFreePitchFifo& getPitchFifo() noexcept               { return fifo; }
+    LockFreePitchFifo& getPitchFifo() noexcept               { return *fifo; }
     const PitchDetector& getDetector() const noexcept        { return detector; }
     StudioDxdShifter& getStudioShifter() noexcept            { return studio; }
 
@@ -193,7 +194,7 @@ private:
             PitchControlTrack::Point pt;
             pt.time = e.frameCentre; pt.shiftSemitones = shift; pt.formantSemitones = formantSemis;
             pt.f0 = e.frequencyHz; pt.voiced = e.voiced; pt.preserve = params.formantPreserve;
-            track.push (pt);
+            track->push (pt);
 
             PitchFrame f;
             f.samplePosition = e.frameCentre;
@@ -207,7 +208,7 @@ private:
                 f.targetMidi     = (float) q.targetMidi;
                 f.deviationCents = (float) q.deviationCents;
             }
-            fifo.push (f);
+            fifo->push (f);
         });
 
         // 3. Wet
@@ -250,7 +251,7 @@ private:
             const std::int64_t shiftToInput = studioEpoch - detectionDelay;
             studio.process (in.data(), out.data(), n, [&] (std::int64_t centre, std::int64_t span) noexcept
             {
-                return track.at (centre + shiftToInput, span);
+                return track->at (centre + shiftToInput, span);
             });
             // Wet = base retardée de L + Δ
             for (int ch = 0; ch < channels; ++ch)
@@ -304,8 +305,10 @@ private:
     CorrectionCurve   curve;
     PSOLAShifter      psola;
     StudioDxdShifter  studio;
-    PitchControlTrack track;
-    LockFreePitchFifo fifo;
+    // Les deux plus gros membres (≈ 160 ko) sont sur le tas, alloués à la construction : un moteur peut vivre sur la
+    // pile d'un hôte ou d'un test sans risquer le débordement (pile de 1 Mo sous Windows).
+    std::unique_ptr<PitchControlTrack> track = std::make_unique<PitchControlTrack>();
+    std::unique_ptr<LockFreePitchFifo> fifo  = std::make_unique<LockFreePitchFifo>();
 
     AuraPitchParams params;
     TrackingMode activeMode = TrackingMode::Live, pendingMode = TrackingMode::Live;

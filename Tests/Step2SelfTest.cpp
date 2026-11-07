@@ -597,6 +597,7 @@ static void testConcurrentUi()
 
 int main()
 {
+    std::setvbuf (stdout, nullptr, _IONBF, 0);     // journal complet même en cas de plantage (CI)
     std::printf ("AuraPitch — banc DSP étape 2\n");
     testFftAndEnvelope();
     testPsola();

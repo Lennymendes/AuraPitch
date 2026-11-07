@@ -279,6 +279,7 @@ static void testEditor()
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
+    std::setvbuf (stdout, nullptr, _IONBF, 0);     // journal complet même en cas de plantage (CI)
     std::printf ("AuraPitch — banc du plug-in (étape 3)\n");
     testParameters();
     testLatency();
