@@ -1,0 +1,144 @@
+# AuraPitch — compilation et bancs d'essai à chaque push
+#   macOS  : VST3 + AU + Standalone, binaire universel arm64 / x86_64, validation auval
+#   Windows: VST3 + Standalone x64 (MSVC)
+#   Linux  : VST3 + Standalone (contrôle de portabilité)
+# Les trois exécutent ctest (bancs DSP étapes 1-2 + banc du processeur JUCE). Une étiquette v* publie une release.
+name: build
+
+on:
+  push:
+    branches: [ "**" ]
+    tags: [ "v*" ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+  JUCE_TAG: 8.0.15
+
+jobs:
+  macos:
+    name: macOS (Universal arm64 + x86_64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-${{ env.JUCE_TAG }}-macos
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config $BUILD_TYPE --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build -C $BUILD_TYPE --output-on-failure
+
+      - name: Check universal binaries
+        run: |
+          lipo -info "build/AuraPitch_artefacts/$BUILD_TYPE/VST3/AuraPitch.vst3/Contents/MacOS/AuraPitch"
+          lipo -info "build/AuraPitch_artefacts/$BUILD_TYPE/AU/AuraPitch.component/Contents/MacOS/AuraPitch"
+
+      - name: Validate Audio Unit (auval)
+        continue-on-error: true
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/AuraPitch_artefacts/$BUILD_TYPE/AU/AuraPitch.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 2
+          auval -v aufx Aupt Nxds
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cd "build/AuraPitch_artefacts/$BUILD_TYPE"
+          ditto -c -k --keepParent VST3/AuraPitch.vst3 "$GITHUB_WORKSPACE/dist/AuraPitch-macOS-VST3.zip"
+          ditto -c -k --keepParent AU/AuraPitch.component "$GITHUB_WORKSPACE/dist/AuraPitch-macOS-AU.zip"
+          ditto -c -k --keepParent Standalone/AuraPitch.app "$GITHUB_WORKSPACE/dist/AuraPitch-macOS-Standalone.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuraPitch-macOS
+          path: dist/*.zip
+
+  windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-${{ env.JUCE_TAG }}-windows
+
+      - name: Configure
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $art = "build/AuraPitch_artefacts/${{ env.BUILD_TYPE }}"
+          Compress-Archive -Path "$art/VST3/AuraPitch.vst3" -DestinationPath dist/AuraPitch-Windows-VST3.zip
+          Compress-Archive -Path "$art/Standalone/AuraPitch.exe" -DestinationPath dist/AuraPitch-Windows-Standalone.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuraPitch-Windows
+          path: dist/*.zip
+
+  linux:
+    name: Linux (contrôle)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxext-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev xvfb ninja-build
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-${{ env.JUCE_TAG }}-linux
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: xvfb-run -a ctest --test-dir build --output-on-failure
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ macos, windows, linux ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

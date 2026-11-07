@@ -1,0 +1,63 @@
+# --- CMake / compilation ---
+build/
+build-*/
+cmake-build-*/
+out/
+dist/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+_deps/
+compile_commands.json
+Testing/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+
+# --- JUCE ---
+JuceLibraryCode/
+Builds/
+*_artefacts/
+
+# --- Plug-ins produits ---
+*.vst3/
+*.component/
+*.aaxplugin/
+*.app/
+
+# --- IDE ---
+.vs/
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+*.suo
+*.user
+*.sln
+*.vcxproj*
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# --- Windows ---
+Thumbs.db
+Desktop.ini
+
+# --- Divers ---
+*.swp
+*~
+*.log
