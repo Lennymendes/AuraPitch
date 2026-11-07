@@ -28,6 +28,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "HalfBand.h"
+
 namespace aura::pitch
 {
 
@@ -64,115 +66,6 @@ struct PitchEstimate
 
 namespace detail
 {
-    /** Tampon circulaire « miroir » : chaque échantillon est écrit deux fois, si bien que les n derniers sont
-        toujours contigus en mémoire (du plus ancien au plus récent), sans copie ni modulo dans les boucles. */
-    class MirrorRing
-    {
-    public:
-        void allocate (int capacity)
-        {
-            cap = std::max (1, capacity);
-            data.assign ((size_t) (2 * cap), 0.0);
-            reset();
-        }
-        void reset() noexcept
-        {
-            std::fill (data.begin(), data.end(), 0.0);
-            head = cap - 1;
-            count = 0;
-        }
-        void push (double v) noexcept
-        {
-            head = (head + 1 == cap) ? 0 : head + 1;
-            data[(size_t) head] = v;
-            data[(size_t) (head + cap)] = v;
-            if (count < cap) ++count;
-        }
-        /** Les n derniers échantillons (n ≤ capacité), du plus ancien [0] au plus récent [n − 1]. */
-        const double* last (int n) const noexcept { return data.data() + head + 1 + cap - n; }
-        int size() const noexcept     { return count; }
-        int capacity() const noexcept { return cap; }
-
-    private:
-        std::vector<double> data;
-        int cap = 1, head = 0, count = 0;
-    };
-
-    /** Décimateur ÷2 à demi-bande : 47 coefficients, dont 24 non nuls (12 distincts par symétrie), centre = 1/2.
-        Bande utile 0 … 0,18 fs, réjection ≈ 90 dB dès 0,32 fs. Retard de groupe : 23 échantillons d'entrée. */
-    class HalfBandDecimator
-    {
-    public:
-        static constexpr int kTaps   = 47;
-        static constexpr int kCentre = 23;
-        static constexpr int kPairs  = 12;           // décalages impairs 1, 3, … 23
-        static constexpr double kGroupDelay = kCentre;
-
-        void prepare()
-        {
-            ring.allocate (kTaps);
-            design (9.0);
-            reset();
-        }
-        void reset() noexcept { ring.reset(); phase = 0; }
-
-        /** Renvoie true quand un échantillon de sortie est produit (un appel sur deux). */
-        bool push (double x, double& y) noexcept
-        {
-            ring.push (x);
-            phase ^= 1;
-            if (phase != 0)
-                return false;
-
-            const double* p = ring.last (kTaps);
-            double acc = 0.5 * p[kCentre];
-            for (int i = 0; i < kPairs; ++i)
-            {
-                const int o = 2 * i + 1;
-                acc += coeffs[(size_t) i] * (p[kCentre - o] + p[kCentre + o]);
-            }
-            y = acc;
-            return true;
-        }
-
-    private:
-        static double besselI0 (double x) noexcept
-        {
-            double sum = 1.0, term = 1.0;
-            const double q = 0.25 * x * x;
-            for (int k = 1; k < 64; ++k)
-            {
-                term *= q / ((double) k * (double) k);
-                sum += term;
-                if (term < sum * 1.0e-17) break;
-            }
-            return sum;
-        }
-
-        void design (double beta) noexcept
-        {
-            constexpr double pi = 3.14159265358979323846;
-            const double i0b = besselI0 (beta);
-            double sum = 0.0;
-            for (int i = 0; i < kPairs; ++i)
-            {
-                const int    o   = 2 * i + 1;
-                const double t   = (double) o / (double) kCentre;              // position normalisée −1 … 1
-                const double win = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - t * t))) / i0b;
-                const double x   = 0.5 * (double) o;                           // sinc demi-bande
-                coeffs[(size_t) i] = 0.5 * std::sin (pi * x) / (pi * x) * win;
-                sum += 2.0 * coeffs[(size_t) i];
-            }
-            // Gain continu exactement 1 : la somme des coefficients impairs vaut 1/2, comme le centre.
-            for (auto& c : coeffs)
-                c *= 0.5 / sum;
-        }
-
-        MirrorRing ring;
-        std::array<double, kPairs> coeffs {};
-        int phase = 0;
-    };
-
     /** Passe-bas Butterworth du 4e ordre (2 cellules biquad, transposée directe II, double). Limite le signal de
         raffinement à la bande de l'analyse : le bruit de souffle au-dessus de 4 kHz, où la voix n'a presque plus
         d'harmoniques, ne vient pas perturber la position du pic. Phase sans importance : l'autocorrélation est

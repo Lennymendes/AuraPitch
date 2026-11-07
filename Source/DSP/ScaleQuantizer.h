@@ -108,7 +108,7 @@ public:
     Mask      getTargetMask() const noexcept           { return targetMask; }
     Mask      getBypassMask() const noexcept           { return bypassMask; }
     NoteState getNoteState (int pc) const noexcept     { return customStates[(size_t) pitchClassOf (pc)]; }
-    bool      isTarget (int midiNote) const noexcept   { return ((targetMask >> pitchClassOf (midiNote)) & 1u) != 0; }
+    bool      isTarget (int midiNote) const noexcept   { return (((unsigned) targetMask >> (unsigned) pitchClassOf (midiNote)) & 1u) != 0; }
 
     /** Oublie la note cible courante (fin de phrase, passage non voisé, changement de gamme). */
     void reset() noexcept { currentNote = kNoNote; }
@@ -128,7 +128,7 @@ public:
 
         // Note bypass : décidée sur la note chromatique la plus proche (comme sur un clavier Auto-Tune).
         const int nearestChromatic = (int) std::lround (inputMidi);
-        if (((bypassMask >> pitchClassOf (nearestChromatic)) & 1u) != 0)
+        if ((((unsigned) bypassMask >> (unsigned) pitchClassOf (nearestChromatic)) & 1u) != 0)
             return bypass (inputMidi);
 
         // Note active la plus proche. Les 14 notes de floor−6 … floor+7 couvrent toutes les classes de hauteur.
