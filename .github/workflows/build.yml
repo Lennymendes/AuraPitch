@@ -19,7 +19,7 @@ env:
 jobs:
   macos:
     name: macOS (Universal arm64 + x86_64)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -78,7 +78,7 @@ jobs:
           key: juce-${{ env.JUCE_TAG }}-windows
 
       - name: Configure
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -B build -A x64          # générateur Visual Studio le plus récent du runner
 
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel 4
