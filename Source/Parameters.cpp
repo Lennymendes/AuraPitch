@@ -163,17 +163,17 @@ const std::vector<FactoryPreset>& factoryPresets()
     static const std::vector<FactoryPreset> presets
     {
         { "Natural Vocal",
-          { { inputType, 1 }, { scale, 0 }, { retuneSpeed, 45.0f }, { humanize, 40.0f }, { formantPreserve, 1 },
-            { trackingMode, 0 }, { mix, 100.0f } } },
+          { { inputType, 1.0f }, { scale, 0.0f }, { retuneSpeed, 45.0f }, { humanize, 40.0f }, { formantPreserve, 1.0f },
+            { trackingMode, 0.0f }, { mix, 100.0f } } },
         { "0ms Hard-Tune Urban",
-          { { inputType, 1 }, { key, 9 }, { scale, 2 }, { retuneSpeed, 0.0f }, { humanize, 0.0f }, { formantPreserve, 1 },
-            { trackingMode, 0 }, { mix, 100.0f } } },
+          { { inputType, 1.0f }, { key, 9.0f }, { scale, 2.0f }, { retuneSpeed, 0.0f }, { humanize, 0.0f }, { formantPreserve, 1.0f },
+            { trackingMode, 0.0f }, { mix, 100.0f } } },
         { "DXD Mastering Surgical",
-          { { inputType, 1 }, { scale, 0 }, { retuneSpeed, 25.0f }, { humanize, 30.0f }, { formantPreserve, 1 },
-            { trackingMode, 1 }, { mix, 100.0f } } },
+          { { inputType, 1.0f }, { scale, 0.0f }, { retuneSpeed, 25.0f }, { humanize, 30.0f }, { formantPreserve, 1.0f },
+            { trackingMode, 1.0f }, { mix, 100.0f } } },
         { "Deep Octave Formant",
-          { { inputType, 1 }, { scale, 0 }, { retuneSpeed, 15.0f }, { humanize, 20.0f }, { transpose, -12 },
-            { formantShift, -3.0f }, { formantPreserve, 1 }, { trackingMode, 0 }, { mix, 50.0f } } },
+          { { inputType, 1.0f }, { scale, 0.0f }, { retuneSpeed, 15.0f }, { humanize, 20.0f }, { transpose, -12.0f },
+            { formantShift, -3.0f }, { formantPreserve, 1.0f }, { trackingMode, 0.0f }, { mix, 50.0f } } },
     };
     return presets;
 }

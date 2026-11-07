@@ -386,7 +386,8 @@ static void testDetectorRobustness()
     // Entrée float = entrée double
     {
         auto sig = makeVowel (48000, 0.3, [] (double) { return 330.0; });
-        std::vector<float> sf (sig.begin(), sig.end());
+        std::vector<float> sf (sig.size());
+        for (size_t k = 0; k < sig.size(); ++k) sf[k] = (float) sig[k];
         PitchDetector a, b; a.prepare (48000); b.prepare (48000);
         double fa = 0, fb = 0;
         a.process (sig.data(), (int) sig.size(), [&] (const PitchEstimate& e, int) { fa = e.frequencyHz; });
@@ -410,7 +411,8 @@ static void testDetectorRealtime()
     {
         PitchDetector det; det.prepare (fs); det.setInputType (InputType::Instrument);
         auto sig = makeVowel (fs, 3.0, [] (double t) { return 110.0 * std::exp2 (t / 3.0); });
-        std::vector<float> sf (sig.begin(), sig.end());
+        std::vector<float> sf (sig.size());
+        for (size_t k = 0; k < sig.size(); ++k) sf[k] = (float) sig[k];
 
         int estimates = 0;
         gAllocations = 0; gCountAllocations = true;

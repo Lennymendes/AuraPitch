@@ -244,10 +244,10 @@ inline double envelopeDistanceDb (const Formants& a, const Formants& b)
     }
     double ma = 0, mb = 0;
     for (size_t i = 0; i < da.size(); ++i) { ma += da[i]; mb += db[i]; }
-    ma /= da.size(); mb /= db.size();
+    ma /= (double) da.size(); mb /= (double) db.size();
     double s = 0;
     for (size_t i = 0; i < da.size(); ++i) { const double d = (da[i] - ma) - (db[i] - mb); s += d * d; }
-    return std::sqrt (s / da.size());
+    return std::sqrt (s / (double) da.size());
 }
 
 /** Détecteur de clics : énergie au-dessus de 6 kHz (passe-haut RBJ du 4e ordre), RMS sur 0,5 ms glissantes.
@@ -278,6 +278,14 @@ inline double maxDb (const std::vector<double>& rms, double fs, double t0, doubl
     double m = 1e-30;
     for (size_t i = (size_t) (t0 * fs); i < std::min (rms.size(), (size_t) (t1 * fs)); ++i) m = std::max (m, rms[i]);
     return 20 * std::log10 (m);
+}
+
+/** Copie en float (conversion explicite, sans avertissement MSVC C4244). */
+inline std::vector<float> toFloat (const std::vector<double>& v)
+{
+    std::vector<float> f (v.size());
+    for (size_t i = 0; i < v.size(); ++i) f[i] = (float) v[i];
+    return f;
 }
 
 inline double rmsDb (const std::vector<double>& y, size_t a, size_t b)

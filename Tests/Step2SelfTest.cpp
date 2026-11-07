@@ -537,7 +537,7 @@ static void testRealtime()
             eng.setParameters (p); eng.reset();
             const double secs = 2.0;
             auto l = makeVowel (fs, secs, [] (double t) { return 180.0 * std::exp2 (std::sin (2 * kPi * 0.5 * t)); });
-            std::vector<float> L (l.begin(), l.end()), R (l.begin(), l.end());
+            std::vector<float> L = toFloat (l), R = toFloat (l);
             const int block = 512;
             gAllocations = 0; gCountAllocations = true;
             const auto t0 = std::chrono::steady_clock::now();
@@ -569,7 +569,7 @@ static void testConcurrentUi()
     AuraPitchEngine eng; eng.prepare (fs, 2);
     AuraPitchParams p; p.mode = TrackingMode::Live; eng.setParameters (p); eng.reset();
     auto x = makeVowel (fs, 1.0, [] (double t) { return 200.0 * std::exp2 (0.5 * std::sin (2 * kPi * t)); });
-    std::vector<float> L (x.begin(), x.end()), R (x.begin(), x.end());
+    std::vector<float> L = toFloat (x), R = toFloat (x);
     std::atomic<bool> done { false };
     long received = 0;
     std::int64_t lastPos = -1;

@@ -28,6 +28,11 @@ struct PitchFrame
     bool  voiced         = false;
 };
 
+#if defined (_MSC_VER)
+ #pragma warning (push)
+ #pragma warning (disable : 4324)   // remplissage voulu : indices sur des lignes de cache distinctes
+#endif
+
 template <typename T, int CapacityPow2>
 class LockFreeSpscFifo
 {
@@ -87,6 +92,10 @@ private:
     alignas (64) std::atomic<std::uint64_t> readIndex  { 0 };
     alignas (64) std::atomic<std::uint64_t> dropped    { 0 };
 };
+
+#if defined (_MSC_VER)
+ #pragma warning (pop)
+#endif
 
 /** 2048 trames : à une trame toutes les 1,5 ms, 3 s d'avance si l'interface est gelée (redimensionnement, menu). */
 using LockFreePitchFifo = LockFreeSpscFifo<PitchFrame, 2048>;

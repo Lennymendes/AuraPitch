@@ -28,7 +28,7 @@ private:
     void update (double dtSeconds);
     void refreshStatus();
 
-    AuraPitchProcessor& processor;
+    AuraPitchProcessor& pitchProcessor;
     nextdsp::LookAndFeel lnf;
     juce::TooltipWindow tooltips { this, 600 };
 

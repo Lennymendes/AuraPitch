@@ -16,7 +16,7 @@ namespace
 }
 
 AuraPitchEditor::AuraPitchEditor (AuraPitchProcessor& p)
-    : AudioProcessorEditor (p), processor (p),
+    : AudioProcessorEditor (p), pitchProcessor (p),
       keyboard (p.getState()),
       inputType (param (p.getState(), P::inputType), { "Soprano", "Alto/Ten", "Low Male", "Instr" }, "Input Type"),
       trackingMode (param (p.getState(), P::trackingMode), { "Live 2 ms", "Studio DXD" }, {}, colours::violet),
@@ -42,14 +42,14 @@ AuraPitchEditor::AuraPitchEditor (AuraPitchProcessor& p)
     keyAttachment   = std::make_unique<AudioProcessorValueTreeState::ComboBoxAttachment> (state, P::key, keyBox);
     scaleAttachment = std::make_unique<AudioProcessorValueTreeState::ComboBoxAttachment> (state, P::scale, scaleBox);
 
-    for (int i = 0; i < processor.getNumPrograms(); ++i)
-        presetBox.addItem (processor.getProgramName (i), i + 1);
+    for (int i = 0; i < pitchProcessor.getNumPrograms(); ++i)
+        presetBox.addItem (pitchProcessor.getProgramName (i), i + 1);
     presetBox.setTextWhenNothingSelected ("Factory Presets");
     presetBox.setSelectedId (0, dontSendNotification);
     presetBox.onChange = [this]
     {
         const int id = presetBox.getSelectedId();
-        if (id > 0) processor.setCurrentProgram (id - 1);
+        if (id > 0) pitchProcessor.setCurrentProgram (id - 1);
     };
 
     preserveAttachment = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment> (state, P::formantPreserve, preserve);
@@ -84,9 +84,9 @@ void AuraPitchEditor::timerCallback()
 
 void AuraPitchEditor::update (double dt)
 {
-    const auto status = processor.getStatus();
-    const double a4ref = processor.getState().getRawParameterValue (P::referenceA4)->load();
-    processor.drainPitchFrames ([&] (const aura::pitch::PitchFrame& f)
+    const auto status = pitchProcessor.getStatus();
+    const double a4ref = pitchProcessor.getState().getRawParameterValue (P::referenceA4)->load();
+    pitchProcessor.drainPitchFrames ([&] (const aura::pitch::PitchFrame& f)
     {
         graph.push (f, status.sampleRate);
         tuner.push (f, a4ref);
@@ -100,7 +100,7 @@ void AuraPitchEditor::update (double dt)
 
 void AuraPitchEditor::refreshStatus()
 {
-    const auto s = processor.getStatus();
+    const auto s = pitchProcessor.getStatus();
     const String rate = s.sampleRate > 0.0 ? String (s.sampleRate / 1000.0, s.sampleRate >= 100000.0 ? 1 : 1) + " kHz" : String ("-- kHz");
     const String bits = s.doublePrecision ? "64-BIT" : "32-BIT";
     const String lat  = s.sampleRate > 0.0 ? String ((double) s.latencySamples / s.sampleRate * 1000.0, 1) + " ms" : String ("-- ms");
