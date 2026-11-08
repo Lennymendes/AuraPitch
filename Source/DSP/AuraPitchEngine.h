@@ -242,6 +242,13 @@ private:
         {
             // Correction : tête unique (SpliceShifter). Effets de formant / grandes transpositions avec Preserve : PSOLA.
             // Les deux tournent en permanence (historique et marques à jour) ; la bascule est un fondu de 10 ms.
+            // Rendu seulement de ce qui s'entend : PSOLA hors fondu et hors effet est coupé, la tête unique aussi
+            // quand PSOLA a entièrement la main (leur état avance quand même : la bascule reste un fondu propre).
+            {
+                const bool wantPsola = usePsola (params);
+                psola.setActive (wantPsola || psolaBlend > 0.0);
+                splice.setRenderEnabled (! wantPsola || psolaBlend < 1.0);
+            }
             int cursor = 0;
             auto run = [&] (int end)
             {
@@ -270,7 +277,6 @@ private:
             run (n);
 
             const double target = usePsola (params) ? 1.0 : 0.0;
-            psola.setActive (target > 0.0 || psolaBlend > 0.0);
             const double blendStep = 1.0 / (0.010 * sampleRate);
             for (int i = 0; i < n; ++i)
             {

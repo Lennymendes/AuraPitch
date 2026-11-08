@@ -57,6 +57,7 @@ public:
         while (size < (int) std::ceil (0.35 * sampleRate) + latency) size <<= 1;
         ringMask = size - 1;
         for (auto& r : rings) r.assign ((size_t) size, 0.0);
+        for (size_t c = 0; c < kMaxChannels; ++c) ringPtrs[c] = rings[c].data();
         lpRing.assign ((size_t) size, 0.0);
         energyRing.assign ((size_t) size, 0.0);
         energyCoeff = 1.0 - std::exp (-1.0 / (0.00025 * newSampleRate));     // énergie lissée sur 0,25 ms
@@ -162,8 +163,10 @@ public:
 
                 const double w   = windowAt (k * g.invHalf);
                 const double pos = (double) n - g.offset + k * (g.alpha - 1.0);
+                std::array<double, kMaxChannels> v {};
+                interp.readChannels (ringPtrs.data(), channels, ringMask, pos, g.bank, v.data());   // un noyau, tous les canaux
                 for (int ch = 0; ch < channels; ++ch)
-                    acc[(size_t) ch] += w * interp.read (rings[(size_t) ch].data(), ringMask, pos, g.bank);
+                    acc[(size_t) ch] += w * v[(size_t) ch];
                 sumW  += w;
                 sumWD += w * g.density;
                 if (! g.locked) unlockedW += w;
@@ -411,6 +414,7 @@ private:
     int    channels = 1, latency = 88;
     std::int64_t ringMask = 0, counter = 0;
     std::array<std::vector<double>, kMaxChannels> rings;
+    std::array<const double*, kMaxChannels> ringPtrs {};
     std::vector<double> lpRing;
     std::array<double, kWindowSize + 1> window {};
     std::array<Grain, kMaxGrains> grains {};

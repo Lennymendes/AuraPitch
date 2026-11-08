@@ -87,6 +87,10 @@ public:
     }
     void setRatio (double r) noexcept { ratioTarget = std::clamp (r, 0.2, 5.0); }
 
+    /** false : l'état (têtes, raccords, historique) avance mais rien n'est lu (sortie à 0). Le moteur Live coupe
+        le rendu quand PSOLA a entièrement la main ; la reprise est immédiate, l'état étant à jour. */
+    void setRenderEnabled (bool e) noexcept { renderEnabled = e; }
+
     template <typename SampleType>
     void process (const SampleType* const* in, SampleType* const* out, int numSamples) noexcept
     {
@@ -106,8 +110,10 @@ public:
 
             step (n);
 
+            std::array<double, kMaxChannels> y {};
+            if (renderEnabled) renderAll (n, y.data());
             for (int ch = 0; ch < channels; ++ch)
-                out[ch][i] = (SampleType) render ((size_t) ch, n);
+                out[ch][i] = (SampleType) y[(size_t) ch];
             ++counter;
         }
     }
@@ -224,26 +230,34 @@ private:
         fading = true;
     }
 
-    double render (size_t ch, std::int64_t n) const noexcept
+    void renderAll (std::int64_t n, double* y) const noexcept
     {
-        const double* ring = rings[ch].data();
+        std::array<const double*, kMaxChannels> rp {};
+        for (int ch = 0; ch < channels; ++ch) rp[(size_t) ch] = rings[(size_t) ch].data();
         if (locked)
-            return ring[(size_t) ((n - (std::int64_t) nominal) & mask)];
+        {
+            for (int ch = 0; ch < channels; ++ch) y[ch] = rp[(size_t) ch][(size_t) ((n - (std::int64_t) nominal) & mask)];
+            return;
+        }
 
+        // Mêmes positions sur tous les canaux : un seul noyau sinc par lecture (stéréo liée, même phase).
         const int bank = SincInterpolator::bankFor (ratio);
-        const double a = interp.read (ring, mask, (double) n - head.offset, bank);
+        interp.readChannels (rp.data(), channels, mask, (double) n - head.offset, bank, y);
         if (! fading)
-            return a;
-        const double b = interp.read (ring, mask, (double) n - other.offset, bank);
+            return;
+        std::array<double, kMaxChannels> b {};
+        interp.readChannels (rp.data(), channels, mask, (double) n - other.offset, bank, b.data());
         const double t = fadePos / fadeLen;
         const double w = 0.5 - 0.5 * std::cos (3.14159265358979323846 * t);      // 0 -> 1
         const double g0 = 1.0 - w, g1 = w;
         const double norm = 1.0 / std::sqrt (std::max (1.0e-6, g0 * g0 + g1 * g1 + 2.0 * lastCorrelation * g0 * g1));
-        return (g0 * a + g1 * b) * norm;
+        for (int ch = 0; ch < channels; ++ch)
+            y[ch] = (g0 * y[ch] + g1 * b[(size_t) ch]) * norm;
     }
 
     double sampleRate = 48000.0, nominal = 96.0, maxPeriod = 1000.0, minPeriod = 30.0;
     int channels = 1;
+    bool renderEnabled = true;
     std::int64_t mask = 0, counter = 0, splices = 0;
     std::array<std::vector<double>, kMaxChannels> rings;
     std::vector<double> mono;

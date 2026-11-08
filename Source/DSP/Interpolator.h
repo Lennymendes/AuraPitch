@@ -69,26 +69,60 @@ public:
     /** Lecture d'un anneau de taille 2^k (masque) à la position absolue pos. */
     double read (const double* ring, std::int64_t mask, double pos, int bank = 0) const noexcept
     {
+        double out = 0.0;
+        readChannels (&ring, 1, mask, pos, bank, &out);
+        return out;
+    }
+
+    /** Même lecture sur nc anneaux à la même position : le noyau est calculé une fois pour tous les canaux
+        (stéréo liée, mêmes positions de lecture). out[ch] = valeur lue. */
+    void readChannels (const double* const* rings, int nc, std::int64_t mask, double pos, int bank,
+                       double* out) const noexcept
+    {
         const double fl = std::floor (pos);
         const std::int64_t i = (std::int64_t) fl;
         const double f = pos - fl;
         if (f <= 0.0 && bank == 0)             // f ∈ [0, 1) : position entière
-            return ring[(size_t) (i & mask)];
+        {
+            for (int ch = 0; ch < nc; ++ch) out[ch] = rings[ch][(size_t) (i & mask)];
+            return;
+        }
 
         // Point k (0 … 47) <-> échantillon i − 23 + k, décalage (k − 23) − f ; index de table ((k − 23 − f) + 24)·P.
         const double base = (1.0 - f) * kPhases;
         const int    ib   = (int) base;
         const double fb   = base - (double) ib;
         const double* t   = tables[(size_t) bank].data();
-        double acc = 0.0;
-        std::int64_t s = i - (kHalf - 1);
-        for (int k = 0; k < kTaps; ++k, ++s)
+        alignas (32) double h[kTaps];
+        for (int k = 0; k < kTaps; ++k)
         {
             const int idx = ib + k * kPhases;
-            const double h = t[idx] + fb * (t[idx + 1] - t[idx]);
-            acc += h * ring[(size_t) (s & mask)];
+            h[k] = t[idx] + fb * (t[idx + 1] - t[idx]);
         }
-        return acc;
+
+        const std::int64_t s0 = (i - (kHalf - 1)) & mask;
+        if (s0 + kTaps <= mask + 1)            // cas courant : les 48 points sont contigus dans l'anneau
+        {
+            for (int ch = 0; ch < nc; ++ch)
+            {
+                const double* r = rings[ch] + s0;
+                double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+                for (int k = 0; k < kTaps; k += 4)
+                {
+                    a0 += h[k] * r[k];         a1 += h[k + 1] * r[k + 1];
+                    a2 += h[k + 2] * r[k + 2]; a3 += h[k + 3] * r[k + 3];
+                }
+                out[ch] = (a0 + a1) + (a2 + a3);
+            }
+            return;
+        }
+        for (int ch = 0; ch < nc; ++ch)
+        {
+            double acc = 0.0;
+            for (int k = 0; k < kTaps; ++k)
+                acc += h[k] * rings[ch][(size_t) ((s0 + k) & mask)];
+            out[ch] = acc;
+        }
     }
 
 private:

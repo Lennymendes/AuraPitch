@@ -242,12 +242,13 @@ transitions V/UV Studio +1,8 dB.
 
 | fs (kHz) | 44,1 | 48 | 96 | 192 | 352,8 | 384 |
 |---|---|---|---|---|---|---|
-| Live | 3,7 % | 4,0 % | 5,4 % | 11,1 % | 16,7 % | 18,5 % |
-| Studio/DXD | 3,8 % | 3,8 % | 3,6 % | 4,6 % | 5,8 % | 6,6 % |
+| Live | 1,8 % | 2,2 % | 4,7 % | 5,3 % | 9,6 % | 11,3 % |
+| Studio/DXD | 2,4 % | 3,0 % | 3,2 % | 6,1 % | 6,9 % | 6,2 % |
 
-Étape 4 : le banc applique Formant +2 dt, donc en Live les deux cœurs tournent (PSOLA rendu, raccords prêts pour le
-fondu) à la fréquence native ; la sinc 48 points coûte plus que l'Hermite. Studio travaille à 44,1/48 kHz quelle que
-soit la fréquence et devient moins cher qu'avec le vocodeur.
+Étape 4 : seul le cœur qui s'entend est rendu (l'autre avance son état pour un fondu propre), et le noyau sinc est
+calculé une fois par lecture pour tous les canaux (lecture contiguë, vectorisée). Sans cela, la première version
+de l'étape 4 montait à 18,5 % en local et 36,7 % sur le runner Linux de la CI à 384 kHz. Les runners de la CI sont
+environ deux fois plus lents que cette machine.
 
 ## Limites et points ouverts
 
@@ -364,7 +365,7 @@ cause à corriger à 48 kHz ; aux fréquences DXD, la découpe existante est con
 | Changement de note G3 −35 c -> C#4 +30 c (glissé 50 ms) | ancienne note rejetée à 61 dB, note chantée à 45–48 dB (idéale 40 dB) |
 | Transmission harmonique par harmonique, 100 Hz – 19,5 kHz, Preserve OFF | ±0,05 dB à 48, 96 et 384 kHz (objectif ±0,2 dB) |
 | Voix réelle, Preserve ON, tiers d'octave 4–16 kHz | ±0,42 dB Live, ±0,35 dB Studio (la bande 2,5 kHz, +0,8 / +1,1 dB, mesure la précision des formants, pas un voile) |
-| Flow rapide, 8 syllabes, glissés 25 ms, consonnes, vibrato | Studio 100 % des trames à ±8 c (max 4,3 c) · Live : 7 syllabes à ±7,2 c, la syllabe en vibrato à 16,9 c |
+| Flow rapide, 8 syllabes, glissés 25 ms, consonnes, vibrato | Studio 100 % des trames à ±8 c (max 4,3 c) · Live hors vibrato 100 % à ±8 c (max 7,2 c sous Linux, 8,9 c sous macOS ; critère ≥ 95 % et max < 12 c), la syllabe en vibrato à 16,9 c |
 | Stéréo Linked, voix centrée | \|L − 0,7 R\| = 1·10⁻¹⁶ : mêmes marques, même phase |
 
 **Limite Live** : le détecteur a 13,5 ms de retard ; un vibrato de ±30 c aplati à Retune 0 laisse un résidu de cet
