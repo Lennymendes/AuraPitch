@@ -1,16 +1,21 @@
 // AuraPitch — NextDSP · AuraSuite
 // AuraPitchEngine.h : chef d'orchestre DSP (sans JUCE). PitchDetector -> ScaleQuantizer -> CorrectionCurve ->
-// PSOLAShifter (Live) ou StudioDxdShifter (Studio/DXD) -> Mix aligné -> LockFreePitchFifo.
+// SpliceShifter / PSOLAShifter (Live) ou StudioDxdShifter (Studio/DXD) -> Mix aligné -> LockFreePitchFifo.
+//
+// Cœur de transposition (étape 4)
+//   * SpliceShifter (cas courant : correction de hauteur, formants conservés naturellement) : une seule tête de
+//     lecture, interpolation sinc 48 points, raccords synchrones de la période glottique (T* par corrélation ±10 %,
+//     sous-échantillon) : une seule voix à la fois, aucun dédoublement, bande passante intacte jusqu'à 20 kHz.
+//   * PSOLAShifter (effets : FormantShift ≠ 0, ou Preserve avec |Transpose| ≥ 2 dt) : grains sinc, marques
+//     glottiques par corrélation locale. Le moteur passe de l'un à l'autre par un fondu de 10 ms (usePsola()).
+//   * Voisement maintenu 50 ms : une micro-coupure du détecteur ne fait plus basculer la sortie vers le Dry.
 //
 // Latences (échantillons à la fréquence native, jusqu'à 384 kHz)
-//   * Live   : D = 2 ms (PSOLA). La hauteur appliquée est la dernière estimation valide dès sa sortie du détecteur
-//              (aucun retard ajouté pour l'attendre). Dry = entrée retardée de D.
-//   * Studio : L = Ldet + Lvoc. Ldet = retard du détecteur (retard de groupe + demi-fenêtre) pour l'InputType le plus
-//              grave + un saut d'analyse : constant, si bien que changer d'InputType ne change pas la latence annoncée.
-//              Le vocodeur lit chaque trame la commande horodatée à l'instant de son centre : la correction tombe à
-//              l'échantillon près sur l'attaque. Dry = entrée retardée de L.
-// Mix : sortie = Dry + Mix × (Wet − Dry). Dans les deux modes, un passage non voisé donne Wet = Dry exactement :
-// Mix < 100 % ne crée ni peigne ni dédoublement sur les consonnes.
+//   * Live   : D = 2 ms. La hauteur appliquée est la dernière estimation valide dès sa sortie du détecteur.
+//   * Studio : ≈ 55–62 ms selon la fréquence, constante. Retard du détecteur pour l'InputType le plus grave + un
+//              saut + découpe multicadence + raccords + filtre de formants différentiel (STFT 1024, module seul,
+//              G = E(k/γ) / E(k)). La commande est lue à l'instant exact de l'échantillon traité.
+// Mix : sortie = Dry + Mix × (Wet − Dry). Un passage non voisé donne Wet = Dry exactement.
 // Temps réel : prepare() alloue ; process() et setParameters() n'allouent rien et ne prennent aucun verrou.
 #pragma once
 
@@ -25,7 +30,8 @@
 #include "PSOLAShifter.h"
 #include "PitchDetector.h"
 #include "ScaleQuantizer.h"
-#include "StudioPhaseVocoder.h"
+#include "SpliceShifter.h"
+#include "StudioFormantFilter.h"
 
 namespace aura::pitch
 {
@@ -63,6 +69,8 @@ public:
 
         detector.prepare (sampleRate);
         psola.prepare (sampleRate, channels, 0.002);
+        splice.prepare (sampleRate, channels, 0.002);
+        holdSamples = (std::int64_t) (0.050 * sampleRate);
         studio.prepare (sampleRate, channels);
 
         double worst = 0.0;
@@ -83,6 +91,7 @@ public:
         {
             inBuf[(size_t) ch].assign (kChunk, 0.0);
             wetBuf[(size_t) ch].assign (kChunk, 0.0);
+            psolaBuf[(size_t) ch].assign (kChunk, 0.0);
             studioIn[(size_t) ch].assign (kChunk, 0.0);
         }
         mono.assign (kChunk, 0.0);
@@ -99,8 +108,12 @@ public:
         quantizer.reset();
         curve.reset();
         psola.reset();
+        splice.reset();
         studio.reset();
         track->reset();
+        lastVoicedPos = -(std::int64_t) 1 << 40;
+        lastPeriod = 0.0; lastFreq = 0.0; lastQ = ScaleQuantizer::Result {};
+        psolaBlend = usePsola (params) ? 1.0 : 0.0;
         counter = 0;
         studioEpoch = 0;
         activeMode = pendingMode = params.mode;
@@ -138,18 +151,20 @@ public:
 private:
     struct Event { int index = 0; double period = 0.0, ratio = 1.0; bool voiced = false; };
 
+    /** Live : PSOLA seulement pour les effets de formant et les grandes transpositions à formants préservés ;
+        la correction de hauteur passe par la tête unique (aucun peigne, aucune voix fantôme). */
+    static bool usePsola (const AuraPitchParams& p) noexcept
+    {
+        return std::abs (p.formantShift) > 0.01 || (p.formantPreserve && std::abs (p.transpose) >= 2.0);
+    }
+
     void applyParameters (const AuraPitchParams& p, bool force) noexcept
     {
         if (force || p.key != params.key)                 quantizer.setKey (p.key);
         if (force || p.customNotes != params.customNotes) quantizer.setCustomStates (p.customNotes);
         if (force || p.scale != params.scale)             quantizer.setScale (p.scale);
         quantizer.setReferenceA4 (p.referenceA4);
-        if (force || p.inputType != params.inputType)
-        {
-            detector.setInputType (p.inputType);
-            const bool low = p.inputType == InputType::LowMale || p.inputType == InputType::Instrument;
-            studio.setResolution (low ? StudioDxdShifter::Resolution::Fine : StudioDxdShifter::Resolution::Fast);
-        }
+        if (force || p.inputType != params.inputType)     detector.setInputType (p.inputType);
         curve.setRetuneMs (p.retuneMs);
         curve.setHumanize (p.humanize);
         curve.setTranspose (p.transpose);
@@ -184,16 +199,27 @@ private:
         detector.process (mono.data(), n, [&] (const PitchEstimate& e, int index) noexcept
         {
             formantSemis += formantCoeff * (params.formantShift - formantSemis);
-            ScaleQuantizer::Result q;
-            if (e.voiced) q = quantizer.quantizeHz (e.frequencyHz);
-            else          quantizer.reset();
-            const double shift = curve.process (q, e.voiced, dt);
 
-            events[(size_t) numEvents++] = Event { index, e.periodSamples, std::exp2 (shift / 12.0), e.voiced };
+            // Maintien du voisement : une trame non voisée isolée au milieu d'une note (souffle, voix éraillée, fry)
+            // ne fait plus basculer le moteur vers la voix d'origine — c'est ce va-et-vient, sur une vraie voix, qui
+            // faisait entendre la note chantée et la note corrigée en même temps. 50 ms sans voisement = vraie
+            // consonne ou silence.
+            const std::int64_t now = counter + index;
+            if (e.voiced) { lastVoicedPos = now; lastPeriod = e.periodSamples; lastFreq = e.frequencyHz; }
+            const bool held = e.voiced || now - lastVoicedPos < holdSamples;
+
+            ScaleQuantizer::Result q;
+            if (e.voiced)    { q = quantizer.quantizeHz (e.frequencyHz); lastQ = q; }
+            else if (held)   { q = lastQ; }
+            else             { quantizer.reset(); }
+            const double shift = curve.process (q, held, dt);
+            const double ratio = held ? std::exp2 (shift / 12.0) : 1.0;     // non voisé : rapport 1 (bypass)
+
+            events[(size_t) numEvents++] = Event { index, held ? lastPeriod : e.periodSamples, ratio, held };
 
             PitchControlTrack::Point pt;
-            pt.time = e.frameCentre; pt.shiftSemitones = shift; pt.formantSemitones = formantSemis;
-            pt.f0 = e.frequencyHz; pt.voiced = e.voiced; pt.preserve = params.formantPreserve;
+            pt.time = e.frameCentre; pt.shiftSemitones = held ? shift : 0.0; pt.formantSemitones = formantSemis;
+            pt.f0 = held ? lastFreq : e.frequencyHz; pt.voiced = held; pt.preserve = params.formantPreserve;
             track->push (pt);
 
             PitchFrame f;
@@ -214,28 +240,48 @@ private:
         // 3. Wet
         if (activeMode == TrackingMode::Live)
         {
+            // Correction : tête unique (SpliceShifter). Effets de formant / grandes transpositions avec Preserve : PSOLA.
+            // Les deux tournent en permanence (historique et marques à jour) ; la bascule est un fondu de 10 ms.
             int cursor = 0;
             auto run = [&] (int end)
             {
                 if (end <= cursor) return;
                 std::array<const double*, kMaxChannels> in {};
-                std::array<double*, kMaxChannels> out {};
+                std::array<double*, kMaxChannels> outS {}, outP {};
                 for (int ch = 0; ch < channels; ++ch)
                 {
-                    in[(size_t) ch]  = inBuf[(size_t) ch].data() + cursor;
-                    out[(size_t) ch] = wetBuf[(size_t) ch].data() + cursor;
+                    in[(size_t) ch]   = inBuf[(size_t) ch].data() + cursor;
+                    outS[(size_t) ch] = wetBuf[(size_t) ch].data() + cursor;
+                    outP[(size_t) ch] = psolaBuf[(size_t) ch].data() + cursor;
                 }
-                psola.process (in.data(), out.data(), end - cursor);
+                splice.process (in.data(), outS.data(), end - cursor);
+                psola.process (in.data(), outP.data(), end - cursor);
                 cursor = end;
             };
             for (int k = 0; k < numEvents; ++k)
             {
                 const auto& ev = events[(size_t) k];
                 run (ev.index + 1);
+                splice.setPitch (ev.period, ev.voiced);
+                splice.setRatio (ev.ratio);
                 psola.setPitch (ev.period, ev.voiced);
                 psola.setShift (ev.ratio, std::exp2 (formantSemis / 12.0), params.formantPreserve);
             }
             run (n);
+
+            const double target = usePsola (params) ? 1.0 : 0.0;
+            psola.setActive (target > 0.0 || psolaBlend > 0.0);
+            const double blendStep = 1.0 / (0.010 * sampleRate);
+            for (int i = 0; i < n; ++i)
+            {
+                psolaBlend += std::clamp (target - psolaBlend, -blendStep, blendStep);
+                if (psolaBlend <= 0.0) continue;
+                for (int ch = 0; ch < channels; ++ch)
+                {
+                    auto& w = wetBuf[(size_t) ch][(size_t) i];
+                    w += psolaBlend * (psolaBuf[(size_t) ch][(size_t) i] - w);
+                }
+            }
         }
         else
         {
@@ -249,6 +295,7 @@ private:
                 out[(size_t) ch] = wetBuf[(size_t) ch].data();
             }
             const std::int64_t shiftToInput = studioEpoch - detectionDelay;
+            studio.setUsePsola (usePsola (params));
             studio.process (in.data(), out.data(), n, [&] (std::int64_t centre, std::int64_t span) noexcept
             {
                 return track->at (centre + shiftToInput, span);
@@ -283,6 +330,7 @@ private:
         {
             activeMode = pendingMode;
             psola.reset();
+            splice.reset();
             studio.reset();
             studioEpoch = counter;
         }
@@ -304,6 +352,7 @@ private:
     ScaleQuantizer    quantizer;
     CorrectionCurve   curve;
     PSOLAShifter      psola;
+    SpliceShifter     splice;
     StudioDxdShifter  studio;
     // Les deux plus gros membres (≈ 160 ko) sont sur le tas, alloués à la construction : un moteur peut vivre sur la
     // pile d'un hôte ou d'un test sans risquer le débordement (pile de 1 Mo sous Windows).
@@ -316,7 +365,10 @@ private:
     std::int64_t studioEpoch = 0;
 
     std::int64_t ringMask = 0, counter = 0;
-    std::array<std::vector<double>, kMaxChannels> rings, inBuf, wetBuf, studioIn;
+    std::array<std::vector<double>, kMaxChannels> rings, inBuf, wetBuf, psolaBuf, studioIn;
+    std::int64_t holdSamples = 2400, lastVoicedPos = 0;
+    double lastPeriod = 0.0, lastFreq = 0.0, psolaBlend = 0.0;
+    ScaleQuantizer::Result lastQ;
     std::vector<double> mono;
     std::vector<Event> events;
 };

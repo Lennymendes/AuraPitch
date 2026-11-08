@@ -194,11 +194,13 @@ static void testPsola()
 
 //==================================================================================================================
 static std::vector<double> runStudio (double fs, const std::vector<double>& x, double f0, double semis, double formantSemis,
-                                      bool preserve, int& latency, StudioDxdShifter* use = nullptr, bool voiced = true)
+                                      bool preserve, int& latency, StudioDxdShifter* use = nullptr, bool voiced = true,
+                                      bool psola = false)
 {
     StudioDxdShifter local;
     StudioDxdShifter& s = use ? *use : local;
     if (! use) s.prepare (fs, 1);
+    s.setUsePsola (psola);           // règle du moteur : PSOLA pour FormantShift et grandes transpositions avec Preserve
     s.reset();
     std::vector<double> d (x.size());
     const double* in[1] = { x.data() };
@@ -234,16 +236,16 @@ static void testStudio()
         double residual = -300;
         if (s.getDecimationFactor() > 1)
         {
-            s.reset(); s.setMuteVocoderForTest (true);
+            s.reset(); s.setMuteForTest (true);
             s.process (in, out, (int) v.size(), [] (std::int64_t, std::int64_t) { FrameControl c; return c; });
-            s.setMuteVocoderForTest (false);
+            s.setMuteForTest (false);
             const int L = s.getLatencySamples();
             double e = 0, ex = 0;
             for (size_t i = (size_t) L + (size_t) (0.1 * fs); i < v.size(); ++i) { const double w = v[i - (size_t) L] + d0[i]; e += w * w; ex += v[i] * v[i]; }
             residual = 10 * std::log10 (e / ex + 1e-300);
         }
-        std::printf ("  %5.1f k : ÷%d -> vocodeur %5.0f Hz, FFT %d, latence %6d éch. (%.1f ms) · neutre max|Δ| %.1e · "
-                     "bande vocale retirée : %.1f dB\n", fs / 1000, s.getDecimationFactor(), s.getVocoderRate(), s.getFftSize(),
+        std::printf ("  %5.1f k : ÷%d -> bande vocale %5.0f Hz, fenêtre de formants %d, latence %6d éch. (%.1f ms) · neutre max|Δ| %.1e · "
+                     "bande vocale retirée : %.1f dB\n", fs / 1000, s.getDecimationFactor(), s.getVocoderRate(), s.getFormantWindow(),
                      s.getLatencySamples(), s.getLatencySamples() / fs * 1000, neutral, residual);
         check (neutral < 1e-12, "vocodeur neutre : Δ = 0 (sortie = entrée retardée)");
         if (s.getDecimationFactor() > 1)
@@ -276,21 +278,27 @@ static void testStudio()
         auto x = makeVowel (fs, 1.4, [] (double) { return 165.0; });
         int L = 0;
         auto in = measureFormants (x, fs, 0.5, 165);
-        auto keep = runStudio (fs, x, 165, 5, 0, true, L, &s);
-        auto chip = runStudio (fs, x, 165, 5, 0, false, L, &s);
-        auto fsh  = runStudio (fs, x, 165, 0, 4, true, L, &s);
+        auto keep = runStudio (fs, x, 165, 5, 0, true, L, &s, true, true);       // transposition +5 Preserve : PSOLA
+        auto chip = runStudio (fs, x, 165, 5, 0, false, L, &s);                 // sans Preserve : tête unique
+        auto fsh  = runStudio (fs, x, 165, 0, 4, true, L, &s, true, true);      // FormantShift : PSOLA
+        auto corr = runStudio (fs, x, 165, 1.5, 0, true, L, &s);                // correction 1,5 dt : tête + filtre différentiel
         const double up = 165 * std::exp2 (5.0 / 12), t = L / fs + 0.4;
         auto mk = measureFormants (keep, fs, t, up);
         const double gk = formantShiftFromHarmonics (x, 165, 0.5, keep, up, t, fs);
         const double gc = formantShiftFromHarmonics (x, 165, 0.5, chip, up, t, fs);
         const double gf = formantShiftFromHarmonics (x, 165, 0.5, fsh, 165, t, fs);
         const double pf = measurePitch (fsh, fs, 165, t, 1.35).meanCents;
+        const double cUp = 165 * std::exp2 (1.5 / 12);
+        const double gcorr = formantShiftFromHarmonics (x, 165, 0.5, corr, cUp, t, fs);
+        const double dcorr = envelopeDistanceDb (in, measureFormants (corr, fs, t, cUp));
         std::printf ("  %5.1f k formants : +5 dt Preserve ON %+.2f dt (écart %.1f dB) · Preserve OFF %+.2f dt · FormantShift +4 : %+.2f dt, hauteur %+.2f c\n",
                      fs / 1000, gk, envelopeDistanceDb (in, mk), gc, gf, pf);
         check (std::abs (gk) < 0.5 && envelopeDistanceDb (in, mk) < 3.0, "Studio Preserve ON : formants en place");
         check (std::abs (gc - 5) < 0.7, "Studio Preserve OFF : formants suivent la hauteur");
         check (std::abs (gf - 4) < 0.7, "Studio FormantShift +4 dt");
         check (std::abs (pf) < 0.2, "Studio FormantShift seul : hauteur inchangée");
+        std::printf ("            correction +1,5 dt (tête unique + filtre différentiel) : formants %+.2f dt, écart d'enveloppe %.2f dB\n", gcorr, dcorr);
+        check (std::abs (gcorr) < 0.2 && dcorr < 1.0, "Studio correction : formants remis en place par le filtre différentiel");
     }
 
     // d. Air du DXD : un 30 kHz superposé à la voix traverse intact pendant la correction
@@ -325,7 +333,8 @@ static void testStudio()
         check (std::abs (m.meanCents) < 0.1, "voix corrigée sous l'air");
     }
 
-    // e. Transitoires : remise en phase sur l'attaque (forme d'onde des 4 premières ms comparée à l'entrée)
+    // e. Attaques : la forme d'onde des 4 premières ms de chaque salve est conservée (moteur temporel, pas de
+    //    vocodeur de phase : plus d'étalement des consonnes ni de pré-écho de fenêtre longue)
     {
         const double fs = 48000;
         std::vector<double> x ((size_t) (fs * 2.0), 0.0);
@@ -341,36 +350,37 @@ static void testStudio()
                                                            + 0.3 * std::sin (2 * kPi * 3100 * t + 1.0));
             }
         }
-        for (auto res : { StudioDxdShifter::Resolution::Fast, StudioDxdShifter::Resolution::Fine })
+        StudioDxdShifter s; s.prepare (fs, 1);
+        int L = 0;
+        auto y = runStudio (fs, x, 600, 1, 0, true, L, &s);
+        double corr = 0, e0 = 0, e1 = 0;
+        for (size_t o : onsets)
         {
-            double corr[2] {}, pre[2] {};
-            std::int64_t transients = 0;
-            for (int rst = 0; rst < 2; ++rst)
+            // la tête lit avec un retard variable (D … D + T) : meilleur alignement dans ± une période
+            const size_t a = o + (size_t) L;
+            double best = -1;
+            for (int lag = -100; lag <= 100; ++lag)
             {
-                StudioDxdShifter s; s.prepare (fs, 1); s.setResolution (res); s.reset();
-                s.getCore().setTransientResetEnabled (rst == 1);
-                int L = 0;
-                auto y = runStudio (fs, x, 600, 1, 0, true, L, &s);
-                double e0 = 0, e1 = 0;
-                for (size_t o : onsets)
+                double sxy = 0, sxx = 0, syy = 0;
+                for (size_t i = 0; i < (size_t) (0.004 * fs); ++i)
                 {
-                    const size_t a = o + (size_t) L;
-                    for (size_t i = a - (size_t) (0.02 * fs); i < a; ++i) e0 += y[i] * y[i];
-                    for (size_t i = a; i < a + (size_t) (0.02 * fs); ++i) e1 += y[i] * y[i];
-                    double sxy = 0, sxx = 0, syy = 0;
-                    for (size_t i = 0; i < (size_t) (0.004 * fs); ++i) { sxy += y[a + i] * x[o + i]; sxx += x[o + i] * x[o + i]; syy += y[a + i] * y[a + i]; }
-                    corr[rst] += sxy / std::sqrt (sxx * syy) / (double) onsets.size();
+                    // référence : la salve idéalement transposée de +1 dt (rééchantillonnée d'un facteur r)
+                    const double r = std::exp2 (1.0 / 12), t = (double) i / fs * r;
+                    const double ref = 0.5 * std::exp (-t / 0.04) * (std::sin (2 * kPi * 600 * t) + 0.5 * std::sin (2 * kPi * 1800 * t + 0.3)
+                                                                     + 0.3 * std::sin (2 * kPi * 3100 * t + 1.0));
+                    const double yv = y[(size_t) ((long) a + lag) + i];
+                    sxy += yv * ref; sxx += ref * ref; syy += yv * yv;
                 }
-                pre[rst] = 10 * std::log10 (e0 / e1);
-                if (rst == 1) transients = s.getCore().getTransientCount();
+                best = std::max (best, sxy / std::sqrt (sxx * syy + 1e-30));
             }
-            std::printf ("  salves percussives +1 dt, FFT %s : forme de l'attaque (corrélation 4 ms) %.2f sans remise en phase, "
-                         "%.2f avec · pré-écho %.1f dB · %lld attaques détectées\n", res == StudioDxdShifter::Resolution::Fast ? "2048" : "4096",
-                         corr[0], corr[1], pre[1], (long long) transients);
-            check (transients >= 6, "toutes les attaques détectées");
-            check (corr[1] > corr[0] + 0.25, "remise en phase : forme de l'attaque mieux conservée");
-            check (pre[1] < -20.0, "pré-écho < −20 dB");
+            corr += best / (double) onsets.size();
+            for (size_t i = a - (size_t) (0.02 * fs); i < a - (size_t) (0.003 * fs); ++i) e0 += y[i] * y[i];
+            for (size_t i = a; i < a + (size_t) (0.02 * fs); ++i) e1 += y[i] * y[i];
         }
+        const double pre = 10 * std::log10 (e0 / e1 + 1e-300);
+        std::printf ("  salves percussives +1 dt : forme de l'attaque vs salve idéalement transposée (corrélation 4 ms) %.3f · pré-écho %.1f dB\n", corr, pre);
+        check (corr > 0.95, "attaques : forme d'onde conservée (corrélation > 0,95)");
+        check (pre < -60.0, "aucun pré-écho (< −60 dB)");
     }
 
     // f. Transitions voisé / non voisé

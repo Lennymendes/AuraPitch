@@ -107,7 +107,7 @@ static void testLatency()
         std::printf ("  %5.1f kHz : Live %4d éch. (%.2f ms) -> Studio %5d éch. (%.1f ms), Low Male %5d -> retour Live %d\n",
                      fs / 1000, live, live / fs * 1000, studio, studio / fs * 1000, studioLow, p->getLatencySamples());
         check (live == p->latencyFor (aura::pitch::TrackingMode::Live) && live == (int) std::lround (0.002 * fs), "Live : 2 ms annoncées");
-        check (studio == p->latencyFor (aura::pitch::TrackingMode::Studio) && studio > 0.1 * fs, "Studio : latence mise à jour par le timer");
+        check (studio == p->latencyFor (aura::pitch::TrackingMode::Studio) && studio > 0.03 * fs, "Studio : latence mise à jour par le timer");
         check (studioLow == studio, "Studio : latence indépendante de l'InputType");
         check (p->getLatencySamples() == live, "retour à la latence Live");
     }

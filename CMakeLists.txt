@@ -129,7 +129,7 @@ if (AURAPITCH_BUILD_TESTS)
     add_custom_target (AuraPitchTests)
 
     # Étape 1 : détecteur, gamme, FIFO · Étape 2 : PSOLA, vocodeur Studio/DXD, formants, moteur complet
-    foreach (bench aurapitch_dsp_test:PitchDspSelfTest aurapitch_engine_test:Step2SelfTest)
+    foreach (bench aurapitch_dsp_test:PitchDspSelfTest aurapitch_engine_test:Step2SelfTest aurapitch_realvoice_test:RealVoiceSelfTest)
         string (REPLACE ":" ";" parts ${bench})
         list (GET parts 0 target)
         list (GET parts 1 source)

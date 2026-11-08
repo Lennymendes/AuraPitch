@@ -1,13 +1,15 @@
 // AuraPitch — NextDSP · AuraSuite
-// PSOLAShifter.h : TD-PSOLA temps réel du mode Live (sans JUCE), 1 ou 2 canaux, 44,1 … 384 kHz.
+// PSOLAShifter.h : TD-PSOLA temps réel (sans JUCE), 1 ou 2 canaux, 44,1 … 384 kHz. Utilisé pour les effets
+// (FormantShift, grandes transpositions avec Preserve) ; la correction courante passe par SpliceShifter.
 //
 // Principe
-//   * Marques d'analyse : grille périodique (période Ta du PitchDetector) verrouillée par une PLL sur le maximum du
-//     signal passe-bas (pic glottique) dans ±Ta/4 autour de chaque marque prédite. La grille est extrapolée vers
-//     l'avant : un grain peut être lancé avant que sa marque soit confirmée.
+//   * Marques d'analyse : chaque marque est propagée de la précédente par corrélation croisée locale (NCC sur le
+//     signal passe-bas, ±Ta/4, raffinement parabolique) : elles restent sur le même point du cycle glottique,
+//     ancrées sur le centre d'énergie de la période. La grille est extrapolée vers l'avant.
 //   * Grains : fenêtre de Hann de ±Ta autour de la marque d'analyse m (dans le domaine d'entrée), posée sur la marque
 //     de synthèse ts ; les marques de synthèse sont espacées de Ts = Ta / ratio.
-//   * Lecture en continu : un grain ne copie rien, il lit l'anneau d'entrée avec un décalage o = ts − m. La sortie
+//   * Lecture en continu : un grain ne copie rien, il lit l'anneau d'entrée (sinc 48 points, banc
+//     anti-repliement choisi selon α) avec un décalage o = ts − m. La sortie
 //     de l'échantillon n n'utilise que des entrées ≤ n − 2 : le moteur est causal avec une latence D fixe (2 ms).
 //   * Formants (domaine temporel) : le contenu du grain est rééchantillonné d'un facteur α autour de la marque
 //     (α > 1 : formants vers le haut). FormantPreserve : α = 2^(FormantShift/12) ; sinon α = ratio × 2^(…/12)
@@ -30,6 +32,8 @@
 #include <cmath>
 #include <cstdint>
 #include <vector>
+
+#include "Interpolator.h"
 
 namespace aura::pitch
 {
@@ -54,6 +58,9 @@ public:
         ringMask = size - 1;
         for (auto& r : rings) r.assign ((size_t) size, 0.0);
         lpRing.assign ((size_t) size, 0.0);
+        energyRing.assign ((size_t) size, 0.0);
+        energyCoeff = 1.0 - std::exp (-1.0 / (0.00025 * newSampleRate));     // énergie lissée sur 0,25 ms
+        interp.prepare();
 
         for (int i = 0; i <= kWindowSize; ++i)
             window[(size_t) i] = 0.5 * (1.0 + std::cos (3.14159265358979323846 * (double) i / kWindowSize));
@@ -69,6 +76,8 @@ public:
     {
         for (auto& r : rings) std::fill (r.begin(), r.end(), 0.0);
         std::fill (lpRing.begin(), lpRing.end(), 0.0);
+        std::fill (energyRing.begin(), energyRing.end(), 0.0);
+        energy = 0.0;
         for (auto& g : grains) g.active = false;
         counter = 0;
         lp1 = lp2 = 0.0;
@@ -88,6 +97,10 @@ public:
     }
 
     int    getLatencySamples() const noexcept { return latency; }
+
+    /** Inactif : l'historique, les marques et les grains restent à jour (reprise instantanée), mais aucun grain
+        n'est calculé et la sortie est l'entrée retardée de D. */
+    void setActive (bool a) noexcept { active = a; }
     double getPeriod() const noexcept         { return period; }
 
     //--- commande (thread audio, à chaque estimation du détecteur) --------------------------------------------------
@@ -127,8 +140,10 @@ public:
             lp1 += lpCoeff * (mono - lp1);
             lp2 += lpCoeff * (lp1 - lp2);
             lpRing[slot] = lp2 + 1.0e-30;
+            energy += energyCoeff * (mono * mono - energy);
+            energyRing[slot] = energy;
 
-            while ((double) n >= pendingMark + 0.25 * period + 1.0)
+            while ((double) n >= pendingMark + 0.6 * period + 1.0)
                 confirmMark (n);
 
             while ((double) n >= nextStart)
@@ -137,7 +152,7 @@ public:
             // Rendu des grains
             std::array<double, kMaxChannels> acc {};
             double sumW = 0.0, sumWD = 0.0, unlockedW = 0.0;
-            const bool render = gain > 0.0 || voicedTarget;
+            const bool render = active && (gain > 0.0 || voicedTarget);
             for (auto& g : grains)
             {
                 if (! g.active) continue;
@@ -148,7 +163,7 @@ public:
                 const double w   = windowAt (k * g.invHalf);
                 const double pos = (double) n - g.offset + k * (g.alpha - 1.0);
                 for (int ch = 0; ch < channels; ++ch)
-                    acc[(size_t) ch] += w * readHermite ((size_t) ch, pos);
+                    acc[(size_t) ch] += w * interp.read (rings[(size_t) ch].data(), ringMask, pos, g.bank);
                 sumW  += w;
                 sumWD += w * g.density;
                 if (! g.locked) unlockedW += w;
@@ -176,7 +191,7 @@ public:
             for (int ch = 0; ch < channels; ++ch)
             {
                 const double dry = rings[(size_t) ch][drySlot];
-                const double wet = sumW > 1.0e-9 ? compGain * acc[(size_t) ch] / norm : dry;
+                const double wet = sumW > 1.0e-9 && render ? compGain * acc[(size_t) ch] / norm : dry;
                 out[ch][i] = (SampleType) (dry + gain * (wet - dry));
             }
             ++counter;
@@ -191,6 +206,7 @@ private:
     {
         double ts = 0.0, offset = 0.0, alpha = 1.0, halfLength = 1.0, invHalf = 1.0, density = 1.0;
         bool   active = false, locked = false;
+        int    bank = 0;
     };
 
     double windowAt (double u) const noexcept
@@ -201,43 +217,92 @@ private:
         return window[(size_t) i] + f * (window[(size_t) i + 1] - window[(size_t) i]);
     }
 
-    double readHermite (size_t ch, double pos) const noexcept
-    {
-        const double fl = std::floor (pos);
-        const std::int64_t i = (std::int64_t) fl;
-        const double f = pos - fl;
-        const auto& r = rings[ch];
-        const double xm1 = r[(size_t) ((i - 1) & ringMask)];
-        const double x0  = r[(size_t) (i & ringMask)];
-        if (f <= 0.0) return x0;
-        const double x1  = r[(size_t) ((i + 1) & ringMask)];
-        const double x2  = r[(size_t) ((i + 2) & ringMask)];
-        const double c1 = 0.5 * (x1 - xm1);
-        const double c2 = xm1 - 2.5 * x0 + 2.0 * x1 - 0.5 * x2;
-        const double c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
-        return ((c3 * f + c2) * f + c1) * f + x0;
-    }
-
-    /** PLL : la marque prédite est tirée à mi-chemin vers le maximum du passe-bas dans ±Ta/4. */
+    /** Marques d'analyse. Première marque d'une phrase : maximum du passe-bas (pic glottique) dans ±Ta/4. Ensuite,
+        la marque suivante est placée à la période T* (±10 % de Ta) qui maximise la corrélation normalisée entre la
+        période centrée sur la marque précédente et la suivante : deux grains voisins décrivent la même phase du cycle
+        glottique et s'additionnent en phase, même quand la période réelle tremble (jitter) ou glisse plus vite que le
+        détecteur. Si la corrélation tombe sous 0,5 (attaque, changement de registre), on revient au pic. */
     void confirmMark (std::int64_t now) noexcept
     {
         const double pred = pendingMark;
         const double half = 0.25 * period;
-        std::int64_t lo = (std::int64_t) std::ceil (pred - half);
-        std::int64_t hi = std::min ((std::int64_t) std::floor (pred + half), now);
-        lo = std::max (lo, now - (std::int64_t) ringMask + 4);
+        double mark = pred;
+        bool fromCorrelation = false;
 
-        double peakPos = pred;
-        if (hi >= lo)
+        if (numMarks > 0)
         {
-            double best = -1.0e300;
-            for (std::int64_t t = lo; t <= hi; ++t)
+            const int T = std::max (8, (int) std::lround (period));
+            const int W = T, stride = std::max (1, T / 96);
+            const std::int64_t a = (std::int64_t) std::lround (lastMark) - W / 2;
+            auto ncc = [&] (int lag, int st) noexcept
             {
-                const double v = lpRing[(size_t) (t & ringMask)];
-                if (v > best) { best = v; peakPos = (double) t; }
+                double xy = 0, xx = 0, yy = 0;
+                for (int k = 0; k < W; k += st)
+                {
+                    const double x = lpRing[(size_t) ((a + k) & ringMask)];
+                    const double y = lpRing[(size_t) ((a + lag + k) & ringMask)];
+                    xy += x * y; xx += x * x; yy += y * y;
+                }
+                return xy / std::sqrt (xx * yy + 1.0e-30);
+            };
+            const int lo = (int) (0.9 * T), hi = (int) std::ceil (1.1 * T);
+            int best = T; double bestC = -2.0;
+            for (int lag = lo; lag <= hi; lag += stride)
+            {
+                if (a + lag + W > now) break;
+                const double c = ncc (lag, stride);
+                if (c > bestC) { bestC = c; best = lag; }
+            }
+            for (int lag = best - stride + 1; lag < best + stride; ++lag)
+            {
+                if (lag < lo || lag > hi || lag == best || a + lag + W > now) continue;
+                const double c = ncc (lag, 1);
+                if (c > bestC) { bestC = c; best = lag; }
+            }
+            if (bestC > 0.5)
+            {
+                double frac = 0.0;
+                if (best > lo && best < hi && a + best + 1 + W <= now)
+                {
+                    const double cm = ncc (best - 1, 1), c0 = ncc (best, 1), cp = ncc (best + 1, 1);
+                    const double den = cm - 2.0 * c0 + cp;
+                    if (den < 0.0) frac = std::clamp (0.5 * (cm - cp) / den, -0.5, 0.5);
+                }
+                mark = lastMark + (double) best + frac;
+                fromCorrelation = true;
             }
         }
-        const double mark = pred + 0.5 * (peakPos - pred);
+
+        if (! fromCorrelation)
+        {
+            // Ancrage sur le centre d'énergie du cycle (impulsion glottique) dans ±T/2 : les fenêtres de Hann
+            // coupent ensuite là où le cycle est le plus calme.
+            std::int64_t lo = (std::int64_t) std::ceil (pred - 2.0 * half);
+            std::int64_t hi = std::min ((std::int64_t) std::floor (pred + 2.0 * half), now);
+            lo = std::max (lo, now - (std::int64_t) ringMask + 4);
+            double peakPos = pred, best = -1.0e300;
+            for (std::int64_t t = lo; t <= hi; ++t)
+            {
+                const double v = energyRing[(size_t) (t & ringMask)];
+                if (v > best) { best = v; peakPos = (double) t; }
+            }
+            mark = peakPos;
+        }
+        else
+        {
+            // Propagation par corrélation, rappelée doucement vers le centre d'énergie (dérive nulle à long terme).
+            std::int64_t lo = (std::int64_t) std::ceil (mark - half);
+            std::int64_t hi = std::min ((std::int64_t) std::floor (mark + half), now);
+            lo = std::max (lo, now - (std::int64_t) ringMask + 4);
+            double peakPos = mark, best = -1.0e300;
+            for (std::int64_t t = lo; t <= hi; ++t)
+            {
+                const double v = energyRing[(size_t) (t & ringMask)];
+                if (v > best) { best = v; peakPos = (double) t; }
+            }
+            mark += 0.1 * (peakPos - mark);
+        }
+
         history[(size_t) (numMarks % kHistory)] = mark;
         ++numMarks;
         lastMark = mark;
@@ -279,7 +344,7 @@ private:
         const double ta      = period;
         const double half    = ta / alpha;                                   // demi-fenêtre en sortie
         // Causalité : la lecture du bord droit (k = half) doit rester ≤ now − 2.
-        const double extra   = std::max (0.0, ta - half) + 3.0;
+        const double extra   = std::max (0.0, ta - half) + 3.0 + SincInterpolator::kLookahead;
         const double oLock   = std::max ((double) latency, extra);
         const bool   unity   = std::abs (ratio - 1.0) < 1.0e-6 && std::abs (alpha - 1.0) < 1.0e-9;
 
@@ -331,6 +396,7 @@ private:
             if (g.active) continue;
             g.ts = ts; g.offset = offset; g.alpha = alpha;
             g.halfLength = half; g.invHalf = 1.0 / half; g.active = true;
+            g.bank = SincInterpolator::bankFor (alpha);
             g.density = locked ? 1.0 : std::max (1.0, half / nextSpacing);
             g.locked = locked;
             break;
@@ -349,13 +415,15 @@ private:
     std::array<double, kWindowSize + 1> window {};
     std::array<Grain, kMaxGrains> grains {};
     std::array<double, kHistory> history {};
+    SincInterpolator interp;
     std::int64_t numMarks = 0;
 
-    double lpCoeff = 0.1, lp1 = 0.0, lp2 = 0.0;
+    double lpCoeff = 0.1, lp1 = 0.0, lp2 = 0.0, energyCoeff = 0.1, energy = 0.0;
+    std::vector<double> energyRing;
     double minPeriod = 30.0, maxPeriod = 1000.0;
     double period = 220.0, lastMark = 0.0, pendingMark = 220.0;
     double ratio = 1.0, alpha = 1.0;
-    bool   voicedTarget = false, needsRelock = true, locked = false;
+    bool   voicedTarget = false, needsRelock = true, locked = false, active = true;
     double lastGrainMark = 0.0;
     double gain = 0.0, nextStart = 0.0, nextTs = 0.0;
     double compGain = 1.0, compCoeff = 0.001;

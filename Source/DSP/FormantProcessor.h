@@ -8,7 +8,7 @@
 //   * warp           : E'(f) = E(f / γ), interpolation linéaire en log : formants déplacés d'un facteur γ.
 //
 // L'ordre cepstral se règle en échantillons de quéfrence : O = ½ · fs / F0 (Röbel). Il ne dépend que de la
-// fréquence d'échantillonnage du vocodeur (44,1 / 48 kHz en DXD, voir StudioPhaseVocoder.h) : l'enveloppe est la
+// fréquence d'échantillonnage de la bande vocale (44,1 / 48 kHz en DXD, voir StudioFormantFilter.h) : l'enveloppe est la
 // même à toutes les fréquences d'entrée. Aucune allocation après prepare().
 #pragma once
 

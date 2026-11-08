@@ -5,9 +5,12 @@ traitement 64 bits. C++20 · JUCE 8.0.15.
 
 ![AuraPitch](docs/screenshot.png)
 
-- **Live** (2 ms) : TD-PSOLA à marques glottiques verrouillées, formants dans le domaine temporel.
-- **Studio/DXD** (≈ 110 ms, constante) : vocodeur à verrouillage de phase, enveloppe spectrale vraie, architecture
-  « delta » qui laisse intact tout ce qui dépasse la bande vocale (air du DXD).
+- **Live** (2 ms) : une seule tête de lecture à raccords glottiques (interpolation sinc 48 points), TD-PSOLA à
+  marques par corrélation pour les effets de formants.
+- **Studio/DXD** (≈ 56–62 ms, constante) : même cœur à 44,1/48 kHz, filtre de formants différentiel (module seul,
+  enveloppe vraie), architecture « delta » qui laisse intact tout ce qui dépasse la bande vocale (air du DXD).
+- Sur voix réaliste : rejet de la voix fantôme 83–87 dB sur voix stable, transmission ±0,05 dB de 100 Hz à
+  19,5 kHz, stéréo liée en phase exacte.
 - Détection MPM 50–1200 Hz à coût constant quelle que soit la fréquence, voisement anti-sifflantes.
 - Gammes, clavier 12 notes (Active / Bypass / Removed), Retune 0–400 ms, Humanize, Transpose ±24, Fine ±100 c,
   A4 415–466 Hz, Formant ±12, Mix aligné à l'échantillon, stéréo liée ou double mono, bypass sans clic.
@@ -28,7 +31,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 Options : `-DJUCE_DIR=/chemin/JUCE` (JUCE local), `-DAURAPITCH_COPY_PLUGIN=ON` (copie dans
 `~/Library/Audio/Plug-Ins/VST3` et `Components` après compilation), `-DAURAPITCH_BUILD_PLUGIN=OFF` (noyau DSP et
-bancs seuls, sans JUCE). La cible `AuraPitchTests` construit les trois bancs.
+bancs seuls, sans JUCE). La cible `AuraPitchTests` construit les quatre bancs.
 
 **macOS, première ouverture** : le plug-in n'est pas signé par un compte développeur Apple (signature ad hoc). Si
 le DAW le refuse : `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/AuraPitch.component`
@@ -42,7 +45,8 @@ avec `auval` et publie les archives ; une étiquette `v*` crée une release GitH
 | Cible | Contenu | Résultat |
 |---|---|---|
 | `aurapitch_dsp_test` | détecteur, gamme, courbe de correction, FIFO | 247 / 247 |
-| `aurapitch_engine_test` | FFT, enveloppe, PSOLA, vocodeur Studio/DXD, moteur, temps réel | 136 / 136 |
+| `aurapitch_engine_test` | FFT, enveloppe, PSOLA, raccords, Studio/DXD, moteur, temps réel | 134 / 134 |
+| `aurapitch_realvoice_test` | voix réaliste : interpolation, voix fantôme, voile, flow rapide, stéréo | 32 / 32 |
 | `aurapitch_plugin_test` | processeur JUCE : paramètres, presets, latence, 32/64 bits, double mono, bypass, état, éditeur | 55 / 55 |
 
 Architecture détaillée et mesures : [ARCHITECTURE.md](ARCHITECTURE.md).
