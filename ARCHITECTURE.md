@@ -19,7 +19,9 @@ qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 3
 - Étape 5A : moteur expressif (Flex / Transition, Throat, Doubler, Auto-Key, MIDI Target) et ergonomie de l'éditeur
   (glissé fin, saisie au clavier, FREEZE, AUTO-KEY, MIDI). Banc `aurapitch_step5a_test` **209 / 209**, banc du
   plug-in **73 / 73**. Réglages neutres (Throat 100 %, Doubler 0 %, Transition 0, MIDI Off) : sortie **identique au
-  bit près** à celle de l'étape 4 (vérifié contre le commit `0afb1e8`, 6 fréquences, Live et Studio).
+  bit près** à celle de l'étape 4 (vérifié contre le commit `0afb1e8`, 6 fréquences, Live et Studio). Les cinq
+  bancs passent sous Linux (GCC 13, JUCE 8.0.15, sans avertissement) ; la CI GitHub n'a pas encore tourné pour cette
+  étape : GitHub refuse de démarrer les jobs tant que la facturation du compte n'est pas réglée.
 - Les bancs DSP passent avec GCC 13 et Clang 18 ; AddressSanitizer + UBSan et ThreadSanitizer ne signalent rien
   (seul le budget CPU échoue sous sanitizer, ce qui est attendu). Les en-têtes compilent sans aucun avertissement
   (`-Wall -Wextra -Wshadow -Wconversion -Wpedantic`).
