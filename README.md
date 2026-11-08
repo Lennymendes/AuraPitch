@@ -25,6 +25,15 @@ traitement 64 bits. C++20 · JUCE 8.0.15.
 
 ![AuraPitch, MIDI Target et Auto-Key](docs/screenshot-5a.png)
 
+- **GRAPH EDITOR (étape 5B)**, sans audio en RAM : **CAPTURE** enregistre les notes chantées sur la timeline du DAW
+  (AudioPlayHead, ≈ 50 Ko par minute de chant), segmentées automatiquement en notes (liaisons legato comprises) ;
+  chaque note se déplace (demi-ton aimanté ou au cent), se quantifie (double-clic), se scinde (clic droit), perd ou
+  gagne son vibrato (Cmd/Ctrl), reçoit un glissé d'attaque (poignée gauche) et son propre formant (Cmd/Ctrl + Alt).
+  Au rejeu, la correction est calculée d'après la hauteur capturée, pour l'instant exact lu, sans retard du
+  détecteur, en Live comme en Studio. Les notes sont sauvegardées avec la session.
+
+![AuraPitch, GRAPH EDITOR](docs/screenshot-graph.png)
+
 ## Compiler
 
 ```bash
@@ -41,7 +50,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 Options : `-DJUCE_DIR=/chemin/JUCE` (JUCE local), `-DAURAPITCH_COPY_PLUGIN=ON` (copie dans
 `~/Library/Audio/Plug-Ins/VST3` et `Components` après compilation), `-DAURAPITCH_BUILD_PLUGIN=OFF` (noyau DSP et
-bancs seuls, sans JUCE). La cible `AuraPitchTests` construit les cinq bancs.
+bancs seuls, sans JUCE). La cible `AuraPitchTests` construit les six bancs.
 
 **AU** : depuis l'étape 5A, l'AU est un *Music Effect* (`aumf`, effet audio avec entrée MIDI) pour recevoir les
 notes du mode MIDI Target ; dans Logic, il s'insère comme effet et la piste MIDI se route vers lui (*side chain*
@@ -62,6 +71,7 @@ avec `auval` et publie les archives ; une étiquette `v*` crée une release GitH
 | `aurapitch_engine_test` | FFT, enveloppe, PSOLA, raccords, Studio/DXD, moteur, temps réel | 134 / 134 |
 | `aurapitch_realvoice_test` | voix réaliste : interpolation, voix fantôme, voile, flow rapide, stéréo | 32 / 32 |
 | `aurapitch_step5a_test` | Auto-Key, MIDI Target, Flex, Throat, Doubler, transparence au bit près, CPU, temps réel | 209 / 209 |
+| `aurapitch_step5b_test` | GRAPH EDITOR : capture et segmentation, édition et rejeu, transparence, scission et état, temps réel avec éditions concurrentes, processeur (AudioPlayHead, état), interface | 66 / 66 (48 sans JUCE) |
 | `aurapitch_plugin_test` | processeur JUCE : paramètres, presets, latence, 32/64 bits, double mono, bypass, état, éditeur, MIDI de l'hôte, ergonomie 5A | 73 / 73 |
 
 Architecture détaillée et mesures : [ARCHITECTURE.md](ARCHITECTURE.md).

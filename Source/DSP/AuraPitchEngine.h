@@ -20,6 +20,14 @@
 //   * Doubler 0 … 100 % (stéréo) : deux voix supplémentaires lues par des têtes à raccords glottiques à +9 ms / −7 c
 //     (gauche) et +14 ms / +7 c (droite). À 0 % : rien n'est calculé.
 //
+// Étape 5B (GRAPH EDITOR, NoteGraphModel.h)
+//   * setTimeline() : position de la timeline du DAW au début de chaque bloc (AudioPlayHead) ; chaque trame est
+//     datée sur la timeline (horloge interne -> secondes, segments mémorisés).
+//   * Capture : pendant la lecture, trames d'analyse -> CaptureFifo (sans verrou) -> message thread.
+//   * Rejeu : là où une note éditée couvre l'instant t, le décalage vient du GraphSnapshot (cible + vibrato dosé +
+//     glissé − hauteur chantée capturée), calculé pour l'instant exact du signal lu (Live : position de la tête de
+//     lecture, tous les 32 échantillons ; Studio : piste horodatée). Hors des notes, la correction automatique.
+//
 // Latences (échantillons à la fréquence native, jusqu'à 384 kHz)
 //   * Live   : D = 2 ms. La hauteur appliquée est la dernière estimation valide dès sa sortie du détecteur.
 //   * Studio : ≈ 55–62 ms selon la fréquence, constante. Retard du détecteur pour l'InputType le plus grave + un
@@ -40,6 +48,7 @@
 #include "AutoKeyDetector.h"
 #include "FormantProcessor.h"
 #include "LockFreePitchFifo.h"
+#include "NoteGraphModel.h"
 #include "PSOLAShifter.h"
 #include "PitchDetector.h"
 #include "ScaleQuantizer.h"
@@ -129,6 +138,7 @@ public:
         doubleOutL.assign (kChunk, 0.0);
         doubleOutR.assign (kChunk, 0.0);
         events.assign (kChunk + 4, Event {});
+        graphLead = 0.001 * sampleRate;
         midiQueue.assign (kMidiQueue, QueuedMidi {});
 
         applyParameters (params, true);
@@ -148,6 +158,8 @@ public:
         throatModel.reset();
         resetDoubler();
         doublerAmount = 0.0;
+        timelineCount = 0;
+        graphFormantSmoothed = 0.0;
         midiHead = midiTail = 0;            // horloge remise à zéro : la file part vide ; les notes tenues restent tenues
         autoKey.reset(); keyAnalyseCountdown = 0.0;
         lastVoicedPos = -(std::int64_t) 1 << 40;
@@ -193,6 +205,24 @@ public:
         return { uiHeld[0].load (std::memory_order_relaxed), uiHeld[1].load (std::memory_order_relaxed) };
     }
 
+    //--- GRAPH EDITOR (étape 5B) -------------------------------------------------------------------------------------
+    /** Thread audio, avant process() : position de la timeline du DAW au début du bloc (s), lecture en cours. */
+    void setTimeline (double seconds, bool playing) noexcept
+    {
+        auto& seg = timeline[(size_t) (timelineCount % kTimelineSegments)];
+        seg = { counter, seconds, playing };
+        ++timelineCount;
+    }
+    /** Message thread : nouvelles notes (remplace les précédentes ; un snapshot vide = aucune note). */
+    void publishGraph (std::unique_ptr<GraphSnapshot> s) { graphExchange.publish (std::move (s)); }
+    /** Message thread : libère les snapshots rendus par le thread audio. */
+    void collectGraphGarbage() { graphExchange.collect(); }
+    /** Capture des trames pendant la lecture (les notes ne sont pas rejouées pendant la capture). */
+    void setCapture (bool on) noexcept { capturing.store (on, std::memory_order_release); }
+    bool isCapturing() const noexcept  { return capturing.load (std::memory_order_acquire); }
+    /** Message thread : trames capturées. */
+    template <typename Fn> int drainCapture (Fn&& fn) { return captureFifo->drain (std::forward<Fn> (fn)); }
+
     //--- Auto-Key (commandes : thread interface ; analyse : thread audio) ------------------------------------------
     void startKeyDetection() noexcept { keyCommand.store (1, std::memory_order_release); }
     void stopKeyDetection() noexcept  { keyCommand.store (2, std::memory_order_release); }
@@ -223,6 +253,7 @@ public:
         }
     }
 
+    static constexpr int    kGraphGrid = 32;           // Live : décalage recalculé tous les 32 échantillons sous une note
     static constexpr double kDoublerDelayLeft  = 0.0075, kDoublerDelayRight = 0.0125;   // retard moyen ≈ D + 0,6 T : 9 / 14 ms
     static constexpr double kDoublerCents      = 7.0;
     static constexpr double kBendRangeSemitones = 2.0;
@@ -244,6 +275,28 @@ private:
             case MidiTargetEvent::PitchBend:   if (bend != nullptr) *bend = std::clamp (ev.bend, -1.0, 1.0) * kBendRangeSemitones; break;
         }
     }
+    /** Instant de la timeline (s) de l'échantillon c (horloge interne). false hors lecture ou inconnu. */
+    bool timelineAt (std::int64_t c, double& t) const noexcept
+    {
+        const auto avail = std::min<std::int64_t> (timelineCount, kTimelineSegments);
+        for (std::int64_t j = 1; j <= avail; ++j)
+        {
+            const auto& seg = timeline[(size_t) ((timelineCount - j) % kTimelineSegments)];
+            if (seg.counter <= c)
+            {
+                if (! seg.playing) return false;
+                t = seg.seconds + (double) (c - seg.counter) / sampleRate;
+                return true;
+            }
+        }
+        return false;
+    }
+    bool graphAt (std::int64_t c, GraphSnapshot::Result& r) const noexcept
+    {
+        double t = 0.0;
+        return graphOn && timelineAt (c, t) && graph->evaluate (t, r);
+    }
+
     void applyMidi (const MidiTargetEvent& ev) noexcept { applyTo (ev, held, &bendSemis); }
     void consumeMidiUntil (std::int64_t t) noexcept
     {
@@ -294,6 +347,11 @@ private:
             mono[(size_t) i] = m / channels;
         }
 
+        // GRAPH : snapshot courant (valable jusqu'au prochain bloc), capture
+        graph = graphExchange.acquire();
+        const bool capture = capturing.load (std::memory_order_acquire);
+        graphOn = graph != nullptr && ! graph->notes.empty() && ! capture;
+
         // Auto-Key : commandes de l'interface
         if (const int cmd = keyCommand.exchange (0, std::memory_order_acq_rel); cmd != 0)
         {
@@ -337,9 +395,24 @@ private:
 
             events[(size_t) numEvents++] = Event { index, isHeld ? lastPeriod : e.periodSamples, ratio, isHeld };
 
+            // GRAPH : capture de la trame (datée au centre de sa fenêtre), puis note éditée à cet instant
+            double frameTime = 0.0;
+            const bool timed = timelineAt (e.frameCentre, frameTime);
+            if (capture && timed)
+                captureFifo->push ({ frameTime, e.voiced ? (float) hzToMidi (e.frequencyHz, params.referenceA4) : 0.0f, e.levelDb, e.voiced });
+            GraphSnapshot::Result gr;
+            const bool edited = graphOn && timed && graph->evaluate (frameTime, gr);
+            graphFormantSmoothed += formantCoeff * ((edited ? gr.formantSemitones : 0.0) - graphFormantSmoothed);
+
             PitchControlTrack::Point pt;
-            pt.time = e.frameCentre; pt.shiftSemitones = isHeld ? shift : 0.0; pt.formantSemitones = formantSemis;
+            pt.time = e.frameCentre; pt.shiftSemitones = isHeld ? shift : 0.0; pt.formantSemitones = formantSemis + graphFormantSmoothed;
             pt.f0 = isHeld ? lastFreq : e.frequencyHz; pt.voiced = isHeld; pt.preserve = params.formantPreserve;
+            if (edited)
+            {
+                pt.shiftSemitones = gr.shiftSemitones;
+                pt.voiced = true;
+                pt.f0 = params.referenceA4 * std::exp2 ((gr.inputMidi - 69.0) / 12.0);
+            }
             track->push (pt);
 
             PitchFrame f;
@@ -353,6 +426,12 @@ private:
                 f.outputMidi     = (float) (f.inputMidi + shift);
                 f.targetMidi     = (float) q.targetMidi;
                 f.deviationCents = (float) q.deviationCents;
+                if (edited)
+                {
+                    f.outputMidi = (float) (f.inputMidi + gr.shiftSemitones);
+                    f.targetMidi = (float) std::round (gr.outputMidi);
+                    f.deviationCents = (float) ((f.inputMidi - f.targetMidi) * 100.0);
+                }
             }
             fifo->push (f);
         });
@@ -377,11 +456,9 @@ private:
             // Les deux tournent en permanence (historique et marques à jour) ; la bascule est un fondu de 10 ms.
             // Rendu seulement de ce qui s'entend : PSOLA hors fondu et hors effet est coupé, la tête unique aussi
             // quand PSOLA a entièrement la main (leur état avance quand même : la bascule reste un fondu propre).
-            {
-                const bool wantPsola = usePsola (params);
-                psola.setActive (wantPsola || psolaBlend > 0.0);
-                splice.setRenderEnabled (! wantPsola || psolaBlend < 1.0);
-            }
+            const bool wantPsola = usePsola (params) || (graphOn && graph->anyFormant);
+            psola.setActive (wantPsola || psolaBlend > 0.0);
+            splice.setRenderEnabled (! wantPsola || psolaBlend < 1.0);
             int cursor = 0;
             auto run = [&] (int end)
             {
@@ -398,18 +475,40 @@ private:
                 psola.process (in.data(), outP.data(), end - cursor);
                 cursor = end;
             };
-            for (int k = 0; k < numEvents; ++k)
+            // Évènements du détecteur, et sous une note éditée une grille de 32 échantillons : le décalage est calculé
+            // pour l'instant d'entrée que la tête lit vraiment (position − retard de lecture + 1 ms d'avance pour le
+            // lissage du rapport), d'après la hauteur capturée — sans le retard du détecteur.
+            int k = 0;
+            int nextGrid = graphOn ? 0 : n;
+            while (k < numEvents || nextGrid < n)
             {
-                const auto& ev = events[(size_t) k];
-                run (ev.index + 1);
-                splice.setPitch (ev.period, ev.voiced);
-                splice.setRatio (ev.ratio);
-                psola.setPitch (ev.period, ev.voiced);
-                psola.setShift (ev.ratio, std::exp2 (formantSemis / 12.0), params.formantPreserve);
+                const bool isEvent = k < numEvents && (nextGrid >= n || events[(size_t) k].index <= nextGrid);
+                const int index = isEvent ? events[(size_t) k].index : nextGrid;
+                run (index + 1);
+                GraphSnapshot::Result gr;
+                const auto readPos = counter + index - (std::int64_t) std::lround (splice.getCurrentOffset() - graphLead);
+                if (graphAt (readPos, gr))
+                {
+                    const double period = sampleRate / (params.referenceA4 * std::exp2 ((gr.inputMidi - 69.0) / 12.0));
+                    const double r = std::exp2 (gr.shiftSemitones / 12.0);
+                    splice.setPitch (period, true);
+                    splice.setRatio (r);
+                    psola.setPitch (period, true);
+                    psola.setShift (r, std::exp2 ((formantSemis + graphFormantSmoothed) / 12.0), params.formantPreserve);
+                }
+                else if (isEvent)
+                {
+                    const auto& ev = events[(size_t) k];
+                    splice.setPitch (ev.period, ev.voiced);
+                    splice.setRatio (ev.ratio);
+                    psola.setPitch (ev.period, ev.voiced);
+                    psola.setShift (ev.ratio, std::exp2 ((formantSemis + graphFormantSmoothed) / 12.0), params.formantPreserve);
+                }
+                if (isEvent) ++k; else nextGrid += kGraphGrid;
             }
             run (n);
 
-            const double target = usePsola (params) ? 1.0 : 0.0;
+            const double target = wantPsola ? 1.0 : 0.0;
             const double blendStep = 1.0 / (0.010 * sampleRate);
             for (int i = 0; i < n; ++i)
             {
@@ -434,7 +533,7 @@ private:
                 out[(size_t) ch] = wetBuf[(size_t) ch].data();
             }
             const std::int64_t shiftToInput = studioEpoch - detectionDelay;
-            studio.setUsePsola (usePsola (params));
+            studio.setUsePsola (usePsola (params) || (graphOn && graph->anyFormant));
             studio.process (in.data(), out.data(), n, [&] (std::int64_t centre, std::int64_t span) noexcept
             {
                 return track->at (centre + shiftToInput, span);
@@ -710,6 +809,18 @@ private:
     std::array<std::uint64_t, 2> held {}, heldForUi {};
     std::array<std::atomic<std::uint64_t>, 2> uiHeld {};
     double bendSemis = 0.0;
+
+    // étape 5B
+    struct TimelineSegment { std::int64_t counter = 0; double seconds = 0.0; bool playing = false; };
+    static constexpr std::int64_t kTimelineSegments = 256;
+    std::array<TimelineSegment, kTimelineSegments> timeline {};
+    std::int64_t timelineCount = 0;
+    GraphExchange graphExchange;
+    const GraphSnapshot* graph = nullptr;
+    bool graphOn = false;
+    double graphLead = 48.0, graphFormantSmoothed = 0.0;
+    std::atomic<bool> capturing { false };
+    std::unique_ptr<CaptureFifo> captureFifo = std::make_unique<CaptureFifo>();
 
     AutoKeyDetector autoKey;
     double keyAnalyseCountdown = 0.0;

@@ -1,4 +1,4 @@
-# AuraPitch 1.0 — NextDSP · architecture (étapes 1 à 5A)
+# AuraPitch 1.0 — NextDSP · architecture (étapes 1 à 5B)
 
 Correction de hauteur et Pitch & Formant Shifter, VST3 / AU / Standalone, C++20 · JUCE 8.0.15 (même version
 qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 352,8 / 384 kHz, entrée/sortie
@@ -22,6 +22,10 @@ qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 3
   bit près** à celle de l'étape 4 (vérifié contre le commit `0afb1e8`, 6 fréquences, Live et Studio). Les cinq
   bancs passent sous Linux (GCC 13, JUCE 8.0.15, sans avertissement) ; la CI GitHub n'a pas encore tourné pour cette
   étape : GitHub refuse de démarrer les jobs tant que la facturation du compte n'est pas réglée.
+- Étape 5B : GRAPH EDITOR calé sur la timeline du DAW, sans audio en RAM (`NoteGraphModel.h`, `GraphEditor`). Banc
+  `aurapitch_step5b_test` **66 / 66** (48 sans JUCE ; ASan + UBSan + LeakSanitizer et ThreadSanitizer muets). Sans
+  notes, ou transport arrêté : sortie identique au bit près à celle de l'étape 4. Validation locale (Linux, GCC 13,
+  JUCE 8.0.15, sans avertissement) ; la CI GitHub reste arrêtée par le quota de minutes du compte.
 - Les bancs DSP passent avec GCC 13 et Clang 18 ; AddressSanitizer + UBSan et ThreadSanitizer ne signalent rien
   (seul le budget CPU échoue sous sanitizer, ce qui est attendu). Les en-têtes compilent sans aucun avertissement
   (`-Wall -Wextra -Wshadow -Wconversion -Wpedantic`).
@@ -42,6 +46,7 @@ AuraPitch/
 │   │   ├── StudioFormantFilter.h      ✅ étape 4 : Studio/DXD = découpe « delta » + raccords + filtre de formants différentiel
 │   │   ├── FormantProcessor.h         ✅ enveloppe vraie (cepstre itératif) ; ThroatModel (étape 5A)
 │   │   ├── AutoKeyDetector.h          ✅ étape 5A : histogramme chromatique -> tonalité + confiance
+│   │   ├── NoteGraphModel.h           ✅ étape 5B : capture, segmentation en notes, snapshot sans verrou, sérialisation
 │   │   ├── FFT.h                      ✅ FFT réelle double (N/2 complexe + séparation)
 │   │   ├── HalfBand.h                 ✅ demi-bandes ÷2 / ×2 génériques, anneau miroir
 │   │   └── LockFreePitchFifo.h        ✅ SPSC statique audio -> interface (PitchFrame)
@@ -52,6 +57,7 @@ AuraPitch/
 │       ├── NextDSPLookAndFeel.h/.cpp  ✅ couleurs, boutons rotatifs à anneau lumineux, listes, interrupteurs
 │       ├── Controls.h/.cpp            ✅ Knob, SegmentedControl (paramètres Choice / Bool)
 │       ├── PitchDisplay.h/.cpp        ✅ PitchGraph (historique défilant), TunerArc (accordeur ±50 c)
+│       ├── GraphEditor.h/.cpp         ✅ étape 5B : GRAPH EDITOR (piano-roll calé sur la timeline, édition à la souris)
 │       └── ScaleKeyboard.h/.cpp       ✅ clavier 12 notes Active / Bypass / Removed
 ├── Tests/
 │   ├── PitchDspSelfTest.cpp           ✅ banc étape 1
@@ -59,10 +65,12 @@ AuraPitch/
 │   ├── PluginSelfTest.cpp             ✅ banc étape 3 (processeur + rendu de l'éditeur en PNG)
 │   ├── RealVoiceSelfTest.cpp          ✅ banc étape 4 (voix réaliste : jitter, shimmer, souffle, consonnes, flow rapide)
 │   ├── Step5ASelfTest.cpp             ✅ banc étape 5A (Auto-Key, MIDI, Flex, Throat, Doubler, transparence, CPU, temps réel)
+│   ├── Step5BTests.cpp                ✅ banc étape 5B (GRAPH EDITOR ; moteur seul, ou + processeur et interface avec JUCE)
 │   ├── VocalRealism.h                 générateur de voix réaliste, rejet de voix fantôme, écarts par tiers d'octave
 │   └── TestSupport.h                  signaux de test, mesures (F0, formants sur harmoniques, clics)
 ├── docs/screenshot.png                capture rendue par le banc (384 kHz, Studio DXD, 64 bits)
 ├── docs/screenshot-5a.png             MIDI Target (notes tenues éclairées), AUTO-KEY appliqué, Throat / Doubler / Flex
+├── docs/screenshot-graph.png          GRAPH EDITOR : phrase capturée, note éditée (D4, vibrato 0), glissé, scission
 ├── .github/workflows/build.yml        CI : macOS universel + auval, Windows x64, Linux, release sur v*
 └── .gitignore
 ```
@@ -513,3 +521,96 @@ Charge CPU, stéréo, voix corrigée (même machine que l'étape 2), réglages n
 - **Budgets CPU des bancs** : stricts en local (5 % étape 1, 25 % étape 2, 25 % étape 5A) ; la CI les multiplie par 3
   (`AURAPITCH_CPU_SCALE`), car un runner partagé est 2 à 3× plus lent et sa charge varie (un passage Windows a
   échoué au budget de 5 % de l'étape 1 sur un commit de documentation).
+
+## Étape 5B — GRAPH EDITOR chirurgical, calé sur la timeline du DAW
+
+### Principe : aucune donnée audio stockée
+
+L'audio continue de traverser le moteur en direct (même chaîne qu'aux étapes 4 / 5A). Le plug-in ne garde que des
+métadonnées datées sur la timeline du DAW :
+
+1. `setTimeline (secondes, lecture)` : le processeur transmet à chaque bloc la position de l'`AudioPlayHead`
+   (`timeInSeconds`, sinon `timeInSamples`). Le moteur garde les 256 derniers segments (horloge interne -> secondes)
+   et date chaque trame d'analyse au centre de sa fenêtre.
+2. **CAPTURE** : pendant la lecture, chaque trame (temps, hauteur MIDI, voisement, niveau) part dans une
+   `CaptureFifo` SPSC statique ; le timer du message thread (20 Hz) la vide dans le `NoteGraphModel`. Une passe qui
+   repasse sur une zone déjà capturée la remplace. 16 octets par trame, ≈ 670 trames/s : ≈ 50 Ko pour 3 s, quelle
+   que soit la fréquence d'échantillonnage.
+3. **Rejeu** : là où une note couvre l'instant t,
+   hauteur voulue = cible + vibratoDepth × écart(t) + glissé(t), hauteur chantée = centre + écart(t) (mesurée au
+   passage de capture), décalage = différence. Il ne dépend pas du détecteur : pas de retard, même en Live.
+
+### Segmentation en notes (`NoteGraphModel::segment`)
+
+- Passages voisés (trous < 40 ms comblés) ; un passage n'est segmenté qu'une fois dépassé de 80 ms (capture en cours).
+- Hauteur lissée sur 150 ms (≈ une période de vibrato : il s'efface), notes par hystérésis de 0,6 dt ; les segments
+  de moins de 60 ms, et ceux d'un glissé (hauteur entre leurs deux voisins, < 150 ms), rejoignent leurs voisins.
+- Frontière : là où la hauteur, lissée sur 20 ms, franchit le milieu des deux notes (liaison legato).
+- `NoteBlob` : début, durée, centre (moyenne des 60 % centraux), cible (note de la gamme la plus proche),
+  `vibratoDepth` 1, `transitionInRatio` 0, `formantOffsetSemitones` 0, micro-courbe (écart au centre, cents) et
+  enveloppe de niveau à 200 Hz, chaque point étant la moyenne des trames de son pas de 5 ms.
+
+Deux défauts trouvés au banc et corrigés : un passage pouvait être tronqué en segmentation incrémentale (la recherche
+partait 1 s avant la zone modifiée, au milieu d'un passage : note 2 commençant à 1,207 s au lieu de 0,95 s) ; le
+glissé legato C4 -> E4 créait une note de 30 ms (C#, D, D# traversés par la hauteur lissée).
+
+### Injection temps réel (`AuraPitchEngine`, `GraphExchange`)
+
+- Le thread audio ne lit qu'un `GraphSnapshot` immuable (notes triées, micro-courbes concaténées, recherche
+  dichotomique). Le message thread publie un nouveau snapshot par échange atomique ; l'ancien revient au message
+  thread par une file SPSC de 64 places et y est libéré. Le thread audio n'alloue, ne libère et ne verrouille jamais
+  (si la file de retour est pleine, il garde l'ancien snapshot un bloc de plus).
+- **Live** : sous une note, le rapport est recalculé tous les 32 échantillons pour l'instant d'entrée que la tête de
+  lecture lit vraiment (position − retard de lecture du `SpliceShifter` + 1 ms d'avance pour le lissage du rapport) ;
+  la période des raccords vient aussi de la hauteur capturée.
+- **Studio** : la piste horodatée reçoit le décalage de la note à l'instant de chaque trame ; le filtre de formants
+  reçoit la hauteur capturée.
+- Formant par note : ajouté au FormantShift global (lissé 30 ms) ; s'il existe des notes à formant, le cœur PSOLA
+  prend la main (fondu de 10 ms), comme pour un FormantShift global.
+- Hors des notes, hors lecture, ou pendant une capture : correction automatique habituelle.
+
+### Sauvegarde
+
+`NoteGraphModel::serialize()` : binaire compact (« APGM », version, notes en doubles exacts, courbes en float),
+stocké en base64 dans l'état de session (propriété `noteGraph`). La copie sérialisée est tenue à jour par le message
+thread : un hôte qui appelle `getStateInformation()` depuis un autre thread ne lit jamais le modèle en cours d'édition.
+2 076 octets pour une note scindée en deux (1,2 s de chant) ; 3,9 Ko d'état complet.
+
+### Interface (`GraphEditor`)
+
+- En-tête du panneau de hauteur : **MONITOR | GRAPH**, puis en vue GRAPH **CAPTURE**, **CLEAR**, **QUANTIZE ALL**,
+  **FOLLOW** ; zoom **− / +** au bout de la règle.
+- Piano-roll : rangées de demi-tons (gamme active éclairée, tonique marquée), règle en secondes et mesures (tempo de
+  l'hôte, 4/4), capsules cyan dont l'épaisseur suit le niveau, courbe chantée en pointillés ambre, courbe rejouée en
+  trait lumineux (elle s'aplatit quand le vibrato baisse, s'incline sur les glissés), poignées (gauche : glissé ;
+  haut : vibrato), étiquette (note, cents, vibrato, formant), tête de lecture, trames brutes en rouge pendant la capture.
+- Souris : voir l'en-tête de `GraphEditor.h` (glisser au demi-ton aimanté sur la gamme, Alt / Maj au cent, lasso,
+  double-clic = quantifier, Alt + double-clic ou clic droit = scinder, Cmd/Ctrl = vibrato, Cmd/Ctrl + Alt = formant,
+  poignée gauche = glissé, molette / Maj + molette = défilement, Cmd/Ctrl + molette = zoom temps, + Alt = zoom hauteur).
+
+### Banc `aurapitch_step5b_test` (66 vérifications ; 48 sans JUCE)
+
+| Mesure | Résultat |
+|---|---|
+| Capture, phrase A3 | C4 ~legato~ E4 | G4, vibrato ±30 c, jitter, timeline à 10 s, 48 / 384 kHz, Live / Studio | 4 notes, frontières à ±9 ms (legato à 1,601–1,602 s pour 1,60), centres à ±2,6 c, cibles justes ; 2 116 trames (50 Ko) |
+| Note 2 (C4 −20 c, vibrato ±30 c) -> D4, vibrato 0, second passage | D4 à ±0,06 c ; vibrato 27,5 -> 1,0 c (−96,0 à −96,6 %) ; note 3 juste, vibrato 27,6 c conservé |
+| Transparence (protocole de l'étape 4, voix A3 +40 c, Preserve OFF, corrigée par une note) | harmoniques 1 … 87 à ±0,030 – 0,049 dB ; identique à la correction automatique au même rapport à ±0,001 dB |
+| Frontière de deux notes éditées (legato D4 | E4), énergie > 6 kHz d'une voyelle sombre | −70,1 dB, contre −70,3 dB dans les notes : aucun clic |
+| Scission C#4 -> C4 | E4, sérialisation, nouveau modèle + nouveau moteur | C4 / E4 à ±0,16 c ; rendu identique au bit près |
+| Temps réel, rejeu et capture pendant 50 à 259 publications concurrentes (thread d'interface simulé) | 0 allocation sur le thread audio ; ASan / UBSan / TSan muets |
+| Sans notes / transport arrêté | identique au bit près |
+| Processeur : AudioPlayHead simulé, CAPTURE, scission, formant +2 dt, getState -> nouvelle instance -> setState | rendu identique au bit près (48 / 384 kHz) |
+| Interface : glisser, Alt, double-clic, Cmd, Cmd + Alt, poignée gauche, clic droit, lasso, Cmd + molette | 62,00 / 62,37 / 62,00 / vibrato 0 % / formant +2,0 / glissé 50 % / 5 notes / sélection / zoom ; rejoué : D4 −0,05 c |
+
+### Limites de l'étape 5B
+
+- **Résidu de vibrato ≈ 1 c (−96 %)** : la fenêtre d'analyse du détecteur atténue légèrement le vibrato mesuré à la
+  capture ; la correction compense donc un peu moins que le vibrato réel. Le critère (> 95 %) passe avec ~1 % de marge.
+- **Transparence aux grands rapports** : la chaîne à raccords (étape 4) perd 0,14 dB à 19 kHz à +2 dt et jusqu'à
+  2,4 dB à +5 dt à 48 kHz (bande de transition du banc anti-repliement) — en correction automatique comme en GRAPH.
+  Le ±0,05 dB est tenu sur le protocole de l'étape 4 (+40 c).
+- **La capture suppose que l'audio rejoué est celui qui a été capturé** : après une nouvelle prise, il faut
+  recapturer la zone (CAPTURE la remplace).
+- **Undo** : les éditions du GRAPH ne passent pas par l'undo de l'hôte.
+- **Dual Mono** : la capture vient du canal gauche ; les mêmes notes s'appliquent aux deux moteurs.
+- **AU / VST3 non testés dans un DAW réel** (Logic, Cubase, Reaper) : l'AudioPlayHead est simulé au banc.

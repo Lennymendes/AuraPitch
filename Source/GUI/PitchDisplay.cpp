@@ -36,7 +36,7 @@ void PitchGraph::resized()
 {
     // en haut, à gauche de la légende
     const auto legend = getLocalBounds().reduced (14, 6).removeFromTop (20);
-    freezeButton.setBounds (legend.withTrimmedRight (240).removeFromRight (72));
+    freezeButton.setBounds (legend.withTrimmedRight (240).removeFromRight (72).withY (legend.getY() + 1).withHeight (22));
 }
 
 void PitchGraph::push (const aura::pitch::PitchFrame& f, double sampleRate)

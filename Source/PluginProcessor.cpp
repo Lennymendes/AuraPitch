@@ -92,6 +92,25 @@ void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, juce::M
         p.mix = 0.0; p.throat = 1.0; p.doubler = 0.0;
     }
 
+    // Timeline du DAW -> moteurs (GRAPH EDITOR). Sans position fiable : hors lecture (ni capture ni notes rejouées).
+    {
+        double seconds = 0.0;
+        bool playing = false;
+        if (auto* ph = getPlayHead())
+            if (auto pos = ph->getPosition())
+            {
+                playing = pos->getIsPlaying();
+                if (auto t = pos->getTimeInSeconds())       seconds = *t;
+                else if (auto smp = pos->getTimeInSamples()) seconds = (double) *smp / preparedRate.load();
+                else                                         playing = false;
+                if (auto bpm = pos->getBpm()) transportBpm = *bpm;
+            }
+        for (auto* e : { linked.get(), left.get(), right.get() })
+            e->setTimeline (seconds, playing);
+        playheadSeconds = seconds;
+        transportPlaying = playing;
+    }
+
     // MIDI -> moteurs (horodaté dans ce bloc). Tous les canaux MIDI ; NoteOn de vélocité 0 = NoteOff.
     for (const auto meta : midi)
     {
@@ -187,7 +206,63 @@ void AuraPitchProcessor::applyKey (int keyIndex, bool minor)
     set (params::scale, (float) (minor ? (int) pitch::ScaleType::Minor : (int) pitch::ScaleType::Major));
 }
 
-void AuraPitchProcessor::timerCallback() { syncLatency(); }
+//==============================================================================================================
+std::uint16_t AuraPitchProcessor::currentScaleMask() const
+{
+    const auto p = snapshot.read();
+    pitch::ScaleQuantizer q;
+    q.setKey (p.key);
+    q.setCustomStates (p.customNotes);
+    q.setScale (p.scale);
+    return q.getTargetMask();
+}
+
+void AuraPitchProcessor::setGraphCapture (bool on)
+{
+    graphCapture = on;
+    for (auto* e : { linked.get(), left.get(), right.get() }) e->setCapture (on);
+    if (! on)
+    {
+        pumpGraph (true);
+        graphEdited();          // la capture finie, les notes se rejouent
+    }
+}
+
+bool AuraPitchProcessor::pumpGraph (bool final)
+{
+    const bool dual = activeChannelMode.load() == (int) params::ChannelMode::DualMono;
+    auto& shown = dual ? *left : *linked;
+    captureBatch.clear();
+    shown.drainCapture ([this] (const pitch::CaptureFrame& f) { captureBatch.push_back (f); });
+    for (auto* e : { linked.get(), left.get(), right.get() })
+        if (e != &shown) e->drainCapture ([] (const pitch::CaptureFrame&) {});
+    graphModel.addFrames (captureBatch);
+    const bool changed = graphModel.segment (final, currentScaleMask());
+    if (changed && ! graphCapture.load())
+        graphEdited();
+    for (auto* e : { linked.get(), left.get(), right.get() }) e->collectGraphGarbage();
+    return changed;
+}
+
+void AuraPitchProcessor::graphEdited()
+{
+    {
+        auto bytes = graphModel.serialize();
+        const std::lock_guard<std::mutex> lock (graphStateLock);
+        graphStateBytes = std::move (bytes);
+    }
+    for (auto* e : { linked.get(), left.get(), right.get() })
+    {
+        e->publishGraph (graphModel.buildSnapshot());
+        e->collectGraphGarbage();
+    }
+}
+
+void AuraPitchProcessor::timerCallback()
+{
+    syncLatency();
+    pumpGraph (false);
+}
 
 void AuraPitchProcessor::syncLatency()
 {
@@ -239,6 +314,12 @@ void AuraPitchProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto tree = state.copyState();
     tree.setProperty ("pluginVersion", JucePlugin_VersionString, nullptr);
     tree.setProperty ("program", currentProgram, nullptr);
+    // GRAPH EDITOR : notes éditées (binaire compact, base64)
+    {
+        const std::lock_guard<std::mutex> lock (graphStateLock);
+        if (graphStateBytes.size() > 12)        // en-tête seul = aucune note
+            tree.setProperty ("noteGraph", juce::MemoryBlock (graphStateBytes.data(), graphStateBytes.size()).toBase64Encoding(), nullptr);
+    }
     if (auto xml = tree.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -250,6 +331,15 @@ void AuraPitchProcessor::setStateInformation (const void* data, int sizeInBytes)
         {
             auto tree = juce::ValueTree::fromXml (*xml);
             currentProgram = tree.getProperty ("program", 0);
+            graphModel.clear();
+            if (tree.hasProperty ("noteGraph"))
+            {
+                juce::MemoryBlock mb;
+                if (mb.fromBase64Encoding (tree.getProperty ("noteGraph").toString()))
+                    graphModel.deserialize (static_cast<const std::uint8_t*> (mb.getData()), mb.getSize());
+                tree.removeProperty ("noteGraph", nullptr);
+            }
+            graphEdited();
             state.replaceState (tree);
         }
 }

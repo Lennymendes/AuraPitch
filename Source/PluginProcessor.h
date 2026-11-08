@@ -9,10 +9,14 @@
 //   * latence : annoncée dans prepareToPlay(), puis tenue à jour par un timer du message thread (changement de
 //     TrackingMode) avec setLatencySamples() + updateHostDisplay (latencyChanged) ;
 //   * MIDI (étape 5A) : NoteOn / NoteOff / Pitch Bend / All Notes Off de tous les canaux, horodatés à l'échantillon,
-//     transmis aux moteurs pour le mode MIDI Target ; Auto-Key piloté depuis l'interface.
+//     transmis aux moteurs pour le mode MIDI Target ; Auto-Key piloté depuis l'interface ;
+//   * GRAPH EDITOR (étape 5B) : position de l'AudioPlayHead transmise aux moteurs à chaque bloc ; CAPTURE (trames
+//     -> NoteGraphModel, message thread) ; notes publiées sans verrou ; notes sauvegardées dans l'état de session.
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+
+#include <mutex>
 
 #include "Parameters.h"
 
@@ -87,6 +91,22 @@ public:
     /** Applique Key + Scale (Major / Minor) aux paramètres, avec notification de l'hôte (undo / automation). */
     void applyKey (int key, bool minor);
 
+    //--- GRAPH EDITOR (message thread) -------------------------------------------------------------------------------
+    aura::pitch::NoteGraphModel& getGraphModel() noexcept { return graphModel; }
+    /** CAPTURE : enregistre les passages lus (les notes ne sont pas rejouées pendant la capture). */
+    void setGraphCapture (bool on);
+    bool isGraphCapturing() const noexcept { return graphCapture.load(); }
+    /** Range les trames capturées et segmente les passages complets (final : tout). true si les notes ont changé. */
+    bool pumpGraph (bool final);
+    /** À appeler après chaque édition du modèle : publie les notes vers le thread audio. */
+    void graphEdited();
+    /** Notes de la gamme courante (bit = classe de hauteur), pour l'aimantation et QUANTIZE ALL. */
+    std::uint16_t currentScaleMask() const;
+    /** Position de lecture vue au dernier bloc (s), transport, tempo. */
+    double getPlayheadSeconds() const noexcept { return playheadSeconds.load(); }
+    bool isTransportPlaying() const noexcept   { return transportPlaying.load(); }
+    double getBpm() const noexcept             { return transportBpm.load(); }
+
     /** Notes MIDI tenues (bit n = note n), pour l'interface. */
     std::array<std::uint64_t, 2> getHeldMidiNotes() const noexcept;
 
@@ -113,6 +133,15 @@ private:
     int    preparedChannels = 2;
     double transitionGain = 1.0;
     int    currentProgram = 0;
+
+    aura::pitch::NoteGraphModel graphModel;
+    std::atomic<bool> graphCapture { false }, transportPlaying { false };
+    std::atomic<double> playheadSeconds { 0.0 }, transportBpm { 120.0 };
+    std::vector<aura::pitch::CaptureFrame> captureBatch;
+    // Copie sérialisée des notes, tenue à jour par le message thread : getStateInformation() peut être appelé
+    // depuis un autre thread par certains hôtes, il ne lit jamais le modèle en cours d'édition.
+    std::mutex graphStateLock;
+    std::vector<std::uint8_t> graphStateBytes;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AuraPitchProcessor)
 };

@@ -100,7 +100,8 @@ if (AURAPITCH_BUILD_PLUGIN)
         Source/GUI/Controls.cpp
         Source/GUI/PitchDisplay.cpp
         Source/GUI/ScaleKeyboard.cpp
-        Source/GUI/PluginEditor.cpp)
+        Source/GUI/PluginEditor.cpp
+        Source/GUI/GraphEditor.cpp)
 
     target_include_directories (AuraPitch PRIVATE Source)
 
@@ -142,6 +143,22 @@ if (AURAPITCH_BUILD_TESTS)
     endforeach()
 
     # Étape 3 : le processeur JUCE (paramètres, presets, latence, 32/64 bits, double mono, bypass, état, éditeur)
+    # Étape 5B : GRAPH EDITOR. Avec le plug-in, le banc teste aussi le processeur (AudioPlayHead, état) ; sans, le
+    # moteur et le modèle seuls (c'est la version compilée sous ASan / UBSan / TSan).
+    if (AURAPITCH_BUILD_PLUGIN)
+        add_executable (aurapitch_step5b_test Tests/Step5BTests.cpp)
+        target_link_libraries (aurapitch_step5b_test PRIVATE AuraPitch aurapitch_dsp Threads::Threads)
+        target_include_directories (aurapitch_step5b_test PRIVATE Source $<TARGET_PROPERTY:AuraPitch,INCLUDE_DIRECTORIES>)
+        target_compile_definitions (aurapitch_step5b_test PRIVATE AURAPITCH_STEP5B_PLUGIN=1 $<TARGET_PROPERTY:AuraPitch,COMPILE_DEFINITIONS>)
+        target_compile_features (aurapitch_step5b_test PRIVATE cxx_std_20)
+    else()
+        add_executable (aurapitch_step5b_test Tests/Step5BTests.cpp)
+        target_link_libraries (aurapitch_step5b_test PRIVATE aurapitch_dsp Threads::Threads)
+        target_compile_options (aurapitch_step5b_test PRIVATE ${AURAPITCH_WARNINGS} $<$<CXX_COMPILER_ID:GNU>:-Wno-mismatched-new-delete>)
+    endif()
+    add_test (NAME aurapitch_step5b_test COMMAND aurapitch_step5b_test)
+    add_dependencies (AuraPitchTests aurapitch_step5b_test)
+
     if (AURAPITCH_BUILD_PLUGIN)
         add_executable (aurapitch_plugin_test Tests/PluginSelfTest.cpp)
         # Le banc se lie au code partagé du plug-in (JUCE déjà compilé dedans) et reprend ses en-têtes et définitions.

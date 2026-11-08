@@ -89,7 +89,7 @@ inline std::vector<double> makeRealVoice (double fs, double seconds, const std::
         return b;
     };
     double ev = 0; size_t nv = 0;
-    for (size_t i = 0; i < n; ++i) if (voice[i] != 0.0) { ev += voice[i] * voice[i]; ++nv; }
+    for (size_t i = 0; i < n; ++i) if (std::abs (voice[i]) > 0.0) { ev += voice[i] * voice[i]; ++nv; }
     const double voiceRms = std::sqrt (ev / (double) std::max<size_t> (nv, 1));
     auto br = band (1000, 16000, spec.seed + 11), cn = band (3000, 12000, spec.seed + 23);
     std::vector<double> out (n);

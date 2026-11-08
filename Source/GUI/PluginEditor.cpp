@@ -17,6 +17,7 @@ namespace
 
 AuraPitchEditor::AuraPitchEditor (AuraPitchProcessor& p)
     : AudioProcessorEditor (p), pitchProcessor (p),
+      graphEditor (p),
       keyboard (p.getState()),
       inputType (param (p.getState(), P::inputType), { "Soprano", "Alto/Ten", "Low Male", "Instr" }, "Input Type"),
       trackingMode (param (p.getState(), P::trackingMode), { "Live 2 ms", "Studio DXD" }, {}, colours::violet),
@@ -40,6 +41,20 @@ AuraPitchEditor::AuraPitchEditor (AuraPitchProcessor& p)
                                                       &formant, &transpose, &fine, &a4, &mix, &preserve, &bypass,
                                                       &flex, &throat, &doubler, &autoKeyButton, &midiButton })
         addAndMakeVisible (c);
+
+    // Vue du panneau de hauteur : MONITOR | GRAPH (au-dessus des deux vues)
+    addChildComponent (graphEditor);
+    for (auto* b : { &viewMonitor, &viewGraph })
+    {
+        b->setClickingTogglesState (true);
+        b->setRadioGroupId (0x5b);
+        b->getProperties().set ("accent", (int64) colours::cyan.getARGB());
+        addAndMakeVisible (b);
+    }
+    viewMonitor.setToggleState (true, dontSendNotification);
+    viewMonitor.onClick = [this] { setGraphView (false); };
+    viewGraph.onClick   = [this] { setGraphView (true); };
+    viewGraph.setTooltip ("GRAPH EDITOR: capture the sung notes on the DAW timeline and edit them");
 
     keyBox.addItemList (P::noteNames(), 1);
     scaleBox.addItemList (P::scaleNames(), 1);
@@ -108,6 +123,8 @@ void AuraPitchEditor::update (double dt)
     });
     keyboard.refresh();
     graph.setScale (keyboard.activeMask(), keyboard.tonic());
+    graphEditor.setScale (keyboard.activeMask(), keyboard.tonic());
+    if (graphView) graphEditor.tick (dt);
 
     // MIDI Target : notes tenues sur le clavier et la grille
     const bool midiOn = pitchProcessor.getState().getRawParameterValue (P::midiTarget)->load() > 0.5f;
@@ -121,6 +138,18 @@ void AuraPitchEditor::update (double dt)
     graph.tick (dt);
     tuner.tick (dt);
     refreshStatus();
+}
+
+void AuraPitchEditor::setGraphView (bool showGraph)
+{
+    graphView = showGraph;
+    viewGraph.setToggleState (showGraph, dontSendNotification);
+    viewMonitor.setToggleState (! showGraph, dontSendNotification);
+    graph.setVisible (! showGraph);
+    graphEditor.setVisible (showGraph);
+    if (showGraph) graphEditor.fitToNotes();
+    viewMonitor.toFront (false);
+    viewGraph.toFront (false);
 }
 
 nextdsp::Knob& AuraPitchEditor::getKnob (const String& id)
@@ -324,6 +353,14 @@ void AuraPitchEditor::resized()
     tuner.setBounds (viz.removeFromRight (jlimit (220, 380, viz.getWidth() / 3)));
     viz.removeFromRight (10);
     graph.setBounds (viz);
+    graphEditor.setBounds (viz);
+    {
+        auto sel = viz.reduced (12, 5).removeFromTop (24).withTrimmedLeft (116).withWidth (124);
+        viewMonitor.setBounds (sel.removeFromLeft (66));
+        viewGraph.setBounds (sel.removeFromLeft (58));
+        viewMonitor.toFront (false);
+        viewGraph.toFront (false);
+    }
 
     // Gamme : Key, Scale, clavier, Input Type, Tracking
     {

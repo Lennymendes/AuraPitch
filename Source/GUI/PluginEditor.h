@@ -6,6 +6,7 @@
 
 #include "../PluginProcessor.h"
 #include "Controls.h"
+#include "GraphEditor.h"
 #include "NextDSPLookAndFeel.h"
 #include "PitchDisplay.h"
 #include "ScaleKeyboard.h"
@@ -27,6 +28,10 @@ public:
     juce::TextButton& getAutoKeyButton() noexcept { return autoKeyButton; }
     juce::TextButton& getMidiButton() noexcept    { return midiButton; }
     nextdsp::PitchGraph& getGraph() noexcept      { return graph; }
+    nextdsp::GraphEditor& getGraphEditor() noexcept { return graphEditor; }
+    /** Vue du panneau de hauteur : MONITOR (historique) ou GRAPH (éditeur de notes). */
+    void setGraphView (bool showGraph);
+    bool isGraphView() const noexcept { return graphView; }
     nextdsp::Knob& getKnob (const juce::String& paramId);
 
     /** Auto-Key : clic sur le bouton (démarre l'écoute, ou l'arrête et applique le meilleur résultat). */
@@ -44,6 +49,9 @@ private:
     juce::TooltipWindow tooltips { this, 600 };
 
     nextdsp::PitchGraph graph;
+    nextdsp::GraphEditor graphEditor;
+    juce::TextButton viewMonitor { "MONITOR" }, viewGraph { "GRAPH" };
+    bool graphView = false;
     nextdsp::TunerArc tuner;
     nextdsp::ScaleKeyboard keyboard;
 
