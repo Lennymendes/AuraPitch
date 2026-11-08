@@ -7,6 +7,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
+
+/** Budget CPU (% d'un cœur) : strict en local, × AURAPITCH_CPU_SCALE sur une VM de CI (voir TestSupport.h). */
+static double cpuBudget (double percent)
+{
+    const char* v = std::getenv ("AURAPITCH_CPU_SCALE");
+    const double scale = v != nullptr ? std::atof (v) : 1.0;
+    return percent * (scale > 1.0 ? scale : 1.0);
+}
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -430,7 +439,7 @@ static void testDetectorRealtime()
         std::printf ("  %5.1f kHz : %.2f %% d'un cœur, %d estimations/s, allocations %ld\n",
                      fs / 1000, secs / 3.0 * 100, estimates / 3, gAllocations.load());
         check (gAllocations.load() == 0, "0 allocation dans process() / setInputType()");
-        check (secs / 3.0 < 0.05, "charge < 5 % d'un cœur");
+        check (secs / 3.0 < cpuBudget (5) / 100.0, "charge < 5 % d'un cœur (× AURAPITCH_CPU_SCALE en CI)");
     }
 }
 

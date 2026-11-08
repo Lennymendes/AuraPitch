@@ -419,7 +419,7 @@ static void testCpu()
             p.throat = 1.15; p.doubler = 0.6;
             const double full = measure (p);
             std::printf ("  %5.1f k %s : %5.1f %% -> %5.1f %%\n", fs / 1000, modeName (mode), base, full);
-            check (full < 35.0, "charge < 35 % d'un cœur avec Throat + Doubler (runners CI ≈ 2× plus lents)");
+            check (full < cpuBudget (25), "charge < 25 % d'un cœur avec Throat + Doubler (× AURAPITCH_CPU_SCALE en CI)");
         }
 }
 

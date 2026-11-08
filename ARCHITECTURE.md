@@ -508,3 +508,6 @@ Charge CPU, stéréo, voix corrigée (même machine que l'étape 2), réglages n
   l'intention : l'expression passe). Pour un vibrato aplati, Flex à 0.
 - **Auto-Key** : majeur / mineur naturel seulement (pas de modes) ; la confiance suppose ≈ 4 notes par seconde.
 - **AU** : le changement de type (`aufx` -> `aumf`) oblige à réinsérer l'AU dans une session Logic existante.
+- **Budgets CPU des bancs** : stricts en local (5 % étape 1, 25 % étape 2, 25 % étape 5A) ; la CI les multiplie par 3
+  (`AURAPITCH_CPU_SCALE`), car un runner partagé est 2 à 3× plus lent et sa charge varie (un passage Windows a
+  échoué au budget de 5 % de l'étape 1 sur un commit de documentation).

@@ -27,6 +27,16 @@ void operator delete (void* p, std::size_t) noexcept { std::free (p); }
 
 namespace test
 {
+/** Budget CPU d'un banc (% d'un cœur). Strict en local ; sur une VM de CI partagée (2 à 3× plus lente, charge voisine
+    variable), la variable d'environnement AURAPITCH_CPU_SCALE le multiplie (3 dans .github/workflows/build.yml). */
+inline double cpuBudget (double percent)
+{
+    double scale = 1.0;
+    if (const char* v = std::getenv ("AURAPITCH_CPU_SCALE"))
+        scale = std::max (1.0, std::atof (v));
+    return percent * scale;
+}
+
 inline int gChecks = 0, gFailures = 0;
 inline void check (bool ok, const char* what)
 {

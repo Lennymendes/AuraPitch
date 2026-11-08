@@ -14,6 +14,8 @@ on:
 
 env:
   BUILD_TYPE: Release
+  # Budgets CPU des bancs × 3 : les runners partagés sont 2 à 3× plus lents qu'un poste et leur charge varie.
+  AURAPITCH_CPU_SCALE: "3"
   JUCE_TAG: 8.0.15
 
 jobs:

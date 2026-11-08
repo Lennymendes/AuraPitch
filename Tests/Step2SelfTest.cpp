@@ -567,7 +567,7 @@ static void testRealtime()
         }
         std::printf ("  %6.1f k  %5.1f %%  %6.1f %%   %ld\n", fs / 1000, load[0], load[1], allocs);
         check (allocs == 0, "0 allocation dans process() / setParameters()");
-        check (load[0] < 25 && load[1] < 25, "charge < 25 % d'un cœur (stéréo)");
+        check (load[0] < cpuBudget (25) && load[1] < cpuBudget (25), "charge < 25 % d'un cœur (stéréo ; × AURAPITCH_CPU_SCALE en CI)");
     }
 }
 
