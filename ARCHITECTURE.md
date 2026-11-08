@@ -288,9 +288,11 @@ Le décimateur du détecteur vient désormais de `HalfBand.h` (mêmes coefficien
 
 ### Limites de l'étape 3
 
-- **Plateformes** : compilé et testé sous Linux uniquement (VST3, Standalone, bancs). macOS et Windows passent pour
-  la première fois par la CI : le premier push dira si Apple Clang et MSVC acceptent le code tel quel. AU et `auval`
-  ne sont essayés que sur le runner macOS (étape non bloquante tant qu'elle n'a pas été vue au vert).
+- **Plateformes** : CI GitHub Actions au vert sur macOS (Apple Clang, binaire universel x86_64 + arm64 vérifié par
+  `lipo`, **AU VALIDATION SUCCEEDED** avec `auval`), Windows x64 (MSVC, Visual Studio 18) et Linux : les trois bancs
+  passent partout, et aucun avertissement du compilateur ne vient du code AuraPitch. Le premier passage Windows a
+  révélé un débordement de pile (pile de 1 Mo) dans le banc : la FIFO et la piste de commande du moteur sont
+  désormais allouées sur le tas à la construction (`sizeof (AuraPitchEngine)` : 210 ko -> 45 ko).
 - **Hôtes réels** : aucune séance dans un DAW (Logic, Cubase, Ableton, Reaper, Pro Tools via AAX non prévu).
   pluginval n'a pas été lancé.
 - **Polices** : celles du système (pas de police embarquée) ; le rendu varie légèrement d'un OS à l'autre.
