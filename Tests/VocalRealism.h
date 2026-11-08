@@ -106,16 +106,17 @@ inline std::vector<double> makeRealVoice (double fs, double seconds, const std::
 inline double linePower (const std::vector<double>& y, double fs, double f, size_t start, size_t len)
 {
     double c = 0, s = 0, wsum = 0;
+    const double span = (double) std::max<size_t> (len, 2) - 1.0;
     for (size_t i = 0; i < len; ++i)
     {
-        const double u = 2 * kPi * (double) i / (double) (len - 1);
+        const double u = 2 * kPi * (double) i / span;
         const double w = 0.35875 - 0.48829 * std::cos (u) + 0.14128 * std::cos (2 * u) - 0.01168 * std::cos (3 * u);
         const double ph = 2 * kPi * f * (double) i / fs;
         c += w * y[start + i] * std::cos (ph);
         s += w * y[start + i] * std::sin (ph);
         wsum += w;
     }
-    return (c * c + s * s) / (wsum * wsum);
+    return (c * c + s * s) / std::max (wsum * wsum, 1e-300);
 }
 
 /** Rejet de la voix fantôme : Σ puissance aux harmoniques de fOut / Σ puissance aux harmoniques de fIn (dB). */
@@ -136,7 +137,7 @@ inline std::vector<std::pair<double, double>> thirdOctaveDeviation (const std::v
                                                                      size_t len, double fs)
 {
     int order = 10;
-    while ((size_t) (1 << (order + 1)) <= len) ++order;
+    while ((size_t (1) << (order + 1)) <= len) ++order;
     const int N = 1 << order;
     aura::pitch::RealFFT fft; fft.prepare (order);
     std::vector<double> fr ((size_t) N), re ((size_t) N / 2 + 1), im ((size_t) N / 2 + 1), pr ((size_t) N / 2 + 1), py ((size_t) N / 2 + 1);
