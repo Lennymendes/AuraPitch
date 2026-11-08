@@ -592,11 +592,11 @@ thread : un hôte qui appelle `getStateInformation()` depuis un autre thread ne 
 
 | Mesure | Résultat |
 |---|---|
-| Capture, phrase A3 | C4 ~legato~ E4 | G4, vibrato ±30 c, jitter, timeline à 10 s, 48 / 384 kHz, Live / Studio | 4 notes, frontières à ±9 ms (legato à 1,601–1,602 s pour 1,60), centres à ±2,6 c, cibles justes ; 2 116 trames (50 Ko) |
+| Capture, phrase A3 · C4 ~legato~ E4 · G4, vibrato ±30 c, jitter, timeline à 10 s, 48 / 384 kHz, Live / Studio | 4 notes, frontières à ±9 ms (legato à 1,601–1,602 s pour 1,60), centres à ±2,6 c, cibles justes ; 2 116 trames (50 Ko) |
 | Note 2 (C4 −20 c, vibrato ±30 c) -> D4, vibrato 0, second passage | D4 à ±0,06 c ; vibrato 27,5 -> 1,0 c (−96,0 à −96,6 %) ; note 3 juste, vibrato 27,6 c conservé |
 | Transparence (protocole de l'étape 4, voix A3 +40 c, Preserve OFF, corrigée par une note) | harmoniques 1 … 87 à ±0,030 – 0,049 dB ; identique à la correction automatique au même rapport à ±0,001 dB |
-| Frontière de deux notes éditées (legato D4 | E4), énergie > 6 kHz d'une voyelle sombre | −70,1 dB, contre −70,3 dB dans les notes : aucun clic |
-| Scission C#4 -> C4 | E4, sérialisation, nouveau modèle + nouveau moteur | C4 / E4 à ±0,16 c ; rendu identique au bit près |
+| Frontière de deux notes éditées (legato D4 / E4), énergie > 6 kHz d'une voyelle sombre | −70,1 dB, contre −70,3 dB dans les notes : aucun clic |
+| Scission C#4 -> C4 puis E4, sérialisation, nouveau modèle + nouveau moteur | C4 / E4 à ±0,16 c ; rendu identique au bit près |
 | Temps réel, rejeu et capture pendant 50 à 259 publications concurrentes (thread d'interface simulé) | 0 allocation sur le thread audio ; ASan / UBSan / TSan muets |
 | Sans notes / transport arrêté | identique au bit près |
 | Processeur : AudioPlayHead simulé, CAPTURE, scission, formant +2 dt, getState -> nouvelle instance -> setState | rendu identique au bit près (48 / 384 kHz) |
