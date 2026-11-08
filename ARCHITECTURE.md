@@ -14,7 +14,8 @@ qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 3
 - Étape 4 : refonte du cœur après l'écoute sur acapella réelle (dédoublement, voile 2–12 kHz, timbre métallique) :
   `SpliceShifter` (une seule tête de lecture, raccords glottiques), interpolation sinc 48 points, filtre de formants
   différentiel en Studio, voisement maintenu 50 ms. Banc `aurapitch_realvoice_test` **32 / 32** ; banc de l'étape 2
-  adapté : **134 / 134**. Latence Studio ramenée de ≈ 110 ms à ≈ 56–62 ms.
+  adapté : **134 / 134**. Latence Studio ramenée de ≈ 110 ms à ≈ 56–62 ms. CI au vert sur macOS (auval),
+  Windows x64 et Linux, les quatre bancs, aucun avertissement du compilateur dans le code AuraPitch.
 - Les bancs DSP passent avec GCC 13 et Clang 18 ; AddressSanitizer + UBSan et ThreadSanitizer ne signalent rien
   (seul le budget CPU échoue sous sanitizer, ce qui est attendu). Les en-têtes compilent sans aucun avertissement
   (`-Wall -Wextra -Wshadow -Wconversion -Wpedantic`).
@@ -365,7 +366,7 @@ cause à corriger à 48 kHz ; aux fréquences DXD, la découpe existante est con
 | Changement de note G3 −35 c -> C#4 +30 c (glissé 50 ms) | ancienne note rejetée à 61 dB, note chantée à 45–48 dB (idéale 40 dB) |
 | Transmission harmonique par harmonique, 100 Hz – 19,5 kHz, Preserve OFF | ±0,05 dB à 48, 96 et 384 kHz (objectif ±0,2 dB) |
 | Voix réelle, Preserve ON, tiers d'octave 4–16 kHz | ±0,42 dB Live, ±0,35 dB Studio (la bande 2,5 kHz, +0,8 / +1,1 dB, mesure la précision des formants, pas un voile) |
-| Flow rapide, 8 syllabes, glissés 25 ms, consonnes, vibrato | Studio 100 % des trames à ±8 c (max 4,3 c) · Live hors vibrato 100 % à ±8 c (max 7,2 c sous Linux, 8,9 c sous macOS ; critère ≥ 95 % et max < 12 c), la syllabe en vibrato à 16,9 c |
+| Flow rapide, 8 syllabes, glissés 25 ms, consonnes, vibrato | Studio 100 % des trames à ±8 c (max 4,3 c) · Live hors vibrato 100 % à ±8 c sous Linux (max 7,2 c ; 8,9 c sous macOS ; critère ≥ 95 % et max < 12 c), la syllabe en vibrato à 16,9 c |
 | Stéréo Linked, voix centrée | \|L − 0,7 R\| = 1·10⁻¹⁶ : mêmes marques, même phase |
 
 **Limite Live** : le détecteur a 13,5 ms de retard ; un vibrato de ±30 c aplati à Retune 0 laisse un résidu de cet
