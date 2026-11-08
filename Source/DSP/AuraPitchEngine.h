@@ -10,6 +10,16 @@
 //     glottiques par corrélation locale. Le moteur passe de l'un à l'autre par un fondu de 10 ms (usePsola()).
 //   * Voisement maintenu 50 ms : une micro-coupure du détecteur ne fait plus basculer la sortie vers le Dry.
 //
+// Étape 5A (expressif)
+//   * Transition (Flex) 0 … 200 ms : lissage inter-notes distinct du Retune (CorrectionCurve).
+//   * MIDI Target : cible = note MIDI tenue la plus proche + Pitch Bend ±2 dt (ScaleQuantizer::quantizeToNotes).
+//     Les évènements sont horodatés à l'échantillon ; Live les applique à l'instant de la trame traitée, Studio à
+//     l'instant du centre de la trame analysée (même alignement que la voix).
+//   * Auto-Key : histogramme chromatique des trames voisées -> tonalité + confiance (AutoKeyDetector.h).
+//   * Throat 80 … 120 % : formants F1 … F3 déplacés sur le Wet (ThroatModel, FormantProcessor.h), sans latence.
+//   * Doubler 0 … 100 % (stéréo) : deux voix supplémentaires lues par des têtes à raccords glottiques à +9 ms / −7 c
+//     (gauche) et +14 ms / +7 c (droite). À 0 % : rien n'est calculé.
+//
 // Latences (échantillons à la fréquence native, jusqu'à 384 kHz)
 //   * Live   : D = 2 ms. La hauteur appliquée est la dernière estimation valide dès sa sortie du détecteur.
 //   * Studio : ≈ 55–62 ms selon la fréquence, constante. Retard du détecteur pour l'InputType le plus grave + un
@@ -21,11 +31,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
+#include "AutoKeyDetector.h"
+#include "FormantProcessor.h"
 #include "LockFreePitchFifo.h"
 #include "PSOLAShifter.h"
 #include "PitchDetector.h"
@@ -53,6 +66,20 @@ struct AuraPitchParams
     double     referenceA4     = 440.0;
     TrackingMode mode          = TrackingMode::Live;
     double     mix             = 1.0;      // 0 … 1
+    // étape 5A
+    double     transitionMs    = 0.0;      // 0 … 200 ms
+    double     throat          = 1.0;      // 0,8 … 1,2
+    double     doubler         = 0.0;      // 0 … 1
+    bool       midiTarget      = false;
+};
+
+/** Évènement MIDI pour le mode MIDI Target (horodaté dans le bloc suivant). */
+struct MidiTargetEvent
+{
+    enum Type : std::uint8_t { NoteOn, NoteOff, PitchBend, AllNotesOff };
+    Type   type = NoteOn;
+    int    note = 0;          // NoteOn / NoteOff
+    double bend = 0.0;        // PitchBend, −1 … +1
 };
 
 class AuraPitchEngine
@@ -72,6 +99,8 @@ public:
         splice.prepare (sampleRate, channels, 0.002);
         holdSamples = (std::int64_t) (0.050 * sampleRate);
         studio.prepare (sampleRate, channels);
+        throatModel.prepare (sampleRate, channels);
+        prepareDoubler();
 
         double worst = 0.0;
         for (auto t : { InputType::Soprano, InputType::AltoTenor, InputType::LowMale, InputType::Instrument })
@@ -93,9 +122,14 @@ public:
             wetBuf[(size_t) ch].assign (kChunk, 0.0);
             psolaBuf[(size_t) ch].assign (kChunk, 0.0);
             studioIn[(size_t) ch].assign (kChunk, 0.0);
+            dryBuf[(size_t) ch].assign (kChunk, 0.0);
         }
         mono.assign (kChunk, 0.0);
+        doubleIn.assign (kChunk, 0.0);
+        doubleOutL.assign (kChunk, 0.0);
+        doubleOutR.assign (kChunk, 0.0);
         events.assign (kChunk + 4, Event {});
+        midiQueue.assign (kMidiQueue, QueuedMidi {});
 
         applyParameters (params, true);
         reset();
@@ -111,6 +145,11 @@ public:
         splice.reset();
         studio.reset();
         track->reset();
+        throatModel.reset();
+        resetDoubler();
+        doublerAmount = 0.0;
+        midiHead = midiTail = 0;            // horloge remise à zéro : la file part vide ; les notes tenues restent tenues
+        autoKey.reset(); keyAnalyseCountdown = 0.0;
         lastVoicedPos = -(std::int64_t) 1 << 40;
         lastPeriod = 0.0; lastFreq = 0.0; lastQ = ScaleQuantizer::Result {};
         psolaBlend = usePsola (params) ? 1.0 : 0.0;
@@ -132,6 +171,42 @@ public:
     LockFreePitchFifo& getPitchFifo() noexcept               { return *fifo; }
     const PitchDetector& getDetector() const noexcept        { return detector; }
     StudioDxdShifter& getStudioShifter() noexcept            { return studio; }
+    const ThroatModel& getThroatModel() const noexcept       { return throatModel; }
+
+    //--- MIDI Target (thread audio, avant process()) ------------------------------------------------------------------
+    /** Évènement à la position sampleOffset du prochain bloc passé à process(). */
+    void addMidiEvent (const MidiTargetEvent& ev, int sampleOffset) noexcept
+    {
+        if (midiTail - midiHead >= kMidiQueue)               // file pleine : l'évènement le plus ancien s'applique tout de suite
+            applyMidi (midiQueue[(size_t) (midiHead++ % kMidiQueue)].event);
+        midiQueue[(size_t) (midiTail++ % kMidiQueue)] = QueuedMidi { counter + std::max (0, sampleOffset), ev };
+
+        // État vu par l'interface (immédiat)
+        auto bits = heldForUi;
+        applyTo (ev, bits, nullptr);
+        for (int w = 0; w < 2; ++w) uiHeld[(size_t) w].store (bits[(size_t) w], std::memory_order_relaxed);
+        heldForUi = bits;
+    }
+    /** Interface : notes MIDI tenues (bit n = note n). */
+    std::array<std::uint64_t, 2> getHeldMidiNotes() const noexcept
+    {
+        return { uiHeld[0].load (std::memory_order_relaxed), uiHeld[1].load (std::memory_order_relaxed) };
+    }
+
+    //--- Auto-Key (commandes : thread interface ; analyse : thread audio) ------------------------------------------
+    void startKeyDetection() noexcept { keyCommand.store (1, std::memory_order_release); }
+    void stopKeyDetection() noexcept  { keyCommand.store (2, std::memory_order_release); }
+    bool isKeyDetectionListening() const noexcept { return keyListening.load (std::memory_order_acquire); }
+    AutoKeyDetector::Result getKeyDetection() const noexcept
+    {
+        AutoKeyDetector::Result r;
+        const int k = keyResult.load (std::memory_order_acquire);
+        r.key = k < 0 ? -1 : k % 12;
+        r.minor = k >= 12;
+        r.confidence = keyConfidence.load (std::memory_order_relaxed);
+        r.seconds = keySeconds.load (std::memory_order_relaxed);
+        return r;
+    }
 
     //--- traitement (en place) ---------------------------------------------------------------------------------------
     template <typename SampleType>
@@ -148,8 +223,33 @@ public:
         }
     }
 
+    static constexpr double kDoublerDelayLeft  = 0.0075, kDoublerDelayRight = 0.0125;   // retard moyen ≈ D + 0,6 T : 9 / 14 ms
+    static constexpr double kDoublerCents      = 7.0;
+    static constexpr double kBendRangeSemitones = 2.0;
+
 private:
     struct Event { int index = 0; double period = 0.0, ratio = 1.0; bool voiced = false; };
+    struct QueuedMidi { std::int64_t time = 0; MidiTargetEvent event; };
+    static constexpr std::int64_t kMidiQueue = 512;
+
+    static void applyTo (const MidiTargetEvent& ev, std::array<std::uint64_t, 2>& bits, double* bend) noexcept
+    {
+        const int n = std::clamp (ev.note, 0, 127);
+        const std::uint64_t mask = (std::uint64_t) 1 << (n & 63);
+        switch (ev.type)
+        {
+            case MidiTargetEvent::NoteOn:      bits[(size_t) (n >> 6)] |= mask; break;
+            case MidiTargetEvent::NoteOff:     bits[(size_t) (n >> 6)] &= ~mask; break;
+            case MidiTargetEvent::AllNotesOff: bits = { 0, 0 }; break;
+            case MidiTargetEvent::PitchBend:   if (bend != nullptr) *bend = std::clamp (ev.bend, -1.0, 1.0) * kBendRangeSemitones; break;
+        }
+    }
+    void applyMidi (const MidiTargetEvent& ev) noexcept { applyTo (ev, held, &bendSemis); }
+    void consumeMidiUntil (std::int64_t t) noexcept
+    {
+        while (midiHead < midiTail && midiQueue[(size_t) (midiHead % kMidiQueue)].time <= t)
+            applyMidi (midiQueue[(size_t) (midiHead++ % kMidiQueue)].event);
+    }
 
     /** Live : PSOLA seulement pour les effets de formant et les grandes transpositions à formants préservés ;
         la correction de hauteur passe par la tête unique (aucun peigne, aucune voix fantôme). */
@@ -169,6 +269,8 @@ private:
         curve.setHumanize (p.humanize);
         curve.setTranspose (p.transpose);
         curve.setFineTuneCents (p.fineTuneCents);
+        curve.setTransitionMs (p.transitionMs);
+        throatModel.setRatio (p.throat);
         pendingMode = p.mode;
         params = p;
     }
@@ -192,6 +294,14 @@ private:
             mono[(size_t) i] = m / channels;
         }
 
+        // Auto-Key : commandes de l'interface
+        if (const int cmd = keyCommand.exchange (0, std::memory_order_acq_rel); cmd != 0)
+        {
+            if (cmd == 1) { autoKey.reset(); keyResult.store (-1); keyConfidence.store (0.0f); keySeconds.store (0.0f); }
+            keyListening.store (cmd == 1, std::memory_order_release);
+        }
+        const bool listening = keyListening.load (std::memory_order_relaxed);
+
         // 2. Détection -> gamme -> courbe -> événements (Live), piste horodatée (Studio), FIFO (interface)
         int numEvents = 0;
         const double dt = (double) detector.getHopInputSamples() / sampleRate;
@@ -206,20 +316,30 @@ private:
             // consonne ou silence.
             const std::int64_t now = counter + index;
             if (e.voiced) { lastVoicedPos = now; lastPeriod = e.periodSamples; lastFreq = e.frequencyHz; }
-            const bool held = e.voiced || now - lastVoicedPos < holdSamples;
+            const bool isHeld = e.voiced || now - lastVoicedPos < holdSamples;
+
+            // MIDI Target : Live applique l'état MIDI de l'instant traité, Studio celui du centre de la trame analysée.
+            consumeMidiUntil (activeMode == TrackingMode::Live ? now : e.frameCentre);
+            if (listening && e.voiced)
+                autoKey.addFrame (hzToMidi (e.frequencyHz, params.referenceA4), e.clarity, e.levelDb, dt);
 
             ScaleQuantizer::Result q;
-            if (e.voiced)    { q = quantizer.quantizeHz (e.frequencyHz); lastQ = q; }
-            else if (held)   { q = lastQ; }
+            if (e.voiced)
+            {
+                q = params.midiTarget ? quantizer.quantizeToNotes (hzToMidi (e.frequencyHz, params.referenceA4), held, bendSemis)
+                                      : quantizer.quantizeHz (e.frequencyHz);
+                lastQ = q;
+            }
+            else if (isHeld)   { q = lastQ; }
             else             { quantizer.reset(); }
-            const double shift = curve.process (q, held, dt);
-            const double ratio = held ? std::exp2 (shift / 12.0) : 1.0;     // non voisé : rapport 1 (bypass)
+            const double shift = curve.process (q, isHeld, dt);
+            const double ratio = isHeld ? std::exp2 (shift / 12.0) : 1.0;     // non voisé : rapport 1 (bypass)
 
-            events[(size_t) numEvents++] = Event { index, held ? lastPeriod : e.periodSamples, ratio, held };
+            events[(size_t) numEvents++] = Event { index, isHeld ? lastPeriod : e.periodSamples, ratio, isHeld };
 
             PitchControlTrack::Point pt;
-            pt.time = e.frameCentre; pt.shiftSemitones = held ? shift : 0.0; pt.formantSemitones = formantSemis;
-            pt.f0 = held ? lastFreq : e.frequencyHz; pt.voiced = held; pt.preserve = params.formantPreserve;
+            pt.time = e.frameCentre; pt.shiftSemitones = isHeld ? shift : 0.0; pt.formantSemitones = formantSemis;
+            pt.f0 = isHeld ? lastFreq : e.frequencyHz; pt.voiced = isHeld; pt.preserve = params.formantPreserve;
             track->push (pt);
 
             PitchFrame f;
@@ -236,6 +356,19 @@ private:
             }
             fifo->push (f);
         });
+
+        if (listening)
+        {
+            keyAnalyseCountdown -= (double) n / sampleRate;
+            if (keyAnalyseCountdown <= 0.0)
+            {
+                keyAnalyseCountdown = 0.1;
+                const auto r = autoKey.analyse();
+                keyResult.store (r.key < 0 ? -1 : r.key + (r.minor ? 12 : 0), std::memory_order_release);
+                keyConfidence.store ((float) r.confidence, std::memory_order_relaxed);
+                keySeconds.store ((float) r.seconds, std::memory_order_relaxed);
+            }
+        }
 
         // 3. Wet
         if (activeMode == TrackingMode::Live)
@@ -312,8 +445,23 @@ private:
                     wetBuf[(size_t) ch][(size_t) i] += rings[(size_t) ch][(size_t) ((counter + i - studioLatency) & ringMask)];
         }
 
-        // 4. Mix aligné + fondu de changement de mode
         const int latency = getLatencySamples (activeMode);
+        const bool throatOn = ! throatModel.isIdle();
+        applyThroatAndDoubler (n, latency);
+        if (throatOn)
+        {
+            // Dry par le même passe-tout que le Wet (Throat engagé) : Mix < 100 % sans peigne.
+            std::array<double*, kMaxChannels> d {};
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                for (int i = 0; i < n; ++i)
+                    dryBuf[(size_t) ch][(size_t) i] = rings[(size_t) ch][(size_t) ((counter + i - latency) & ringMask)];
+                d[(size_t) ch] = dryBuf[(size_t) ch].data();
+            }
+            throatModel.processDry (d.data(), channels, n);
+        }
+
+        // 4. Mix aligné + fondu de changement de mode
         const double mixStep = 1.0 / (0.020 * sampleRate);
         const double modeStep = 1.0 / (0.005 * sampleRate);
         for (int i = 0; i < n; ++i)
@@ -325,7 +473,7 @@ private:
             const size_t drySlot = (size_t) ((counter + i - latency) & ringMask);
             for (int ch = 0; ch < channels; ++ch)
             {
-                const double dry = rings[(size_t) ch][drySlot];
+                const double dry = throatOn ? dryBuf[(size_t) ch][(size_t) i] : rings[(size_t) ch][drySlot];
                 const double wet = wetBuf[(size_t) ch][(size_t) i];
                 writeBack (io, ch, i, (dry + mixValue * (wet - dry)) * modeGain);
             }
@@ -338,7 +486,175 @@ private:
             psola.reset();
             splice.reset();
             studio.reset();
+            throatModel.reset();
+            doubleLeft.reset(); doubleRight.reset();
             studioEpoch = counter;
+        }
+    }
+
+    /** Throat puis Doubler, sur le Wet. La commande (voisement, période de sortie) est lue sur la piste horodatée à
+        l'instant d'entrée qui correspond au Wet (t − latence) : Live et Studio restent alignés sur la voix. */
+    void applyThroatAndDoubler (int n, int latency) noexcept
+    {
+        const bool throatOn = ! throatModel.isIdle();
+        const bool doublerWanted = channels == 2 && params.doubler > 0.0;
+        if (! throatOn && ! doublerWanted && doublerAmount <= 0.0)
+            return;
+
+        if (doublerWanted && doublerAmount <= 0.0)          // reprise après repos : historique neuf
+            resetDoubler();
+
+        constexpr int kSub = 32;
+        for (int start = 0; start < n; start += kSub)
+        {
+            const int len = std::min (kSub, n - start);
+            const auto c = track->at (counter + start - latency, 0);
+            const double outPeriod = c.voiced && c.f0 > 0.0 ? sampleRate / (c.f0 * c.ratio) : 0.0;
+
+            std::array<double*, kMaxChannels> w {};
+            for (int ch = 0; ch < channels; ++ch) w[(size_t) ch] = wetBuf[(size_t) ch].data() + start;
+            if (throatOn)
+            {
+                throatModel.setVoiced (c.voiced);
+                throatModel.process (w.data(), channels, len, start);
+            }
+            if (channels == 2 && (doublerWanted || doublerAmount > 0.0))
+            {
+                for (int i = 0; i < len; ++i) doubleIn[(size_t) i] = 0.5 * (w[0][i] + w[1][i]);
+                renderDoubles (len, outPeriod);
+                const double step = 1.0 / (0.020 * sampleRate);
+                for (int i = 0; i < len; ++i)
+                {
+                    doublerAmount += std::clamp ((doublerWanted ? params.doubler : 0.0) - doublerAmount, -step, step);
+                    // voix doublées à −3 dB au maximum, niveau global conservé (voix décorrélées : somme en puissance)
+                    const double g = 0.7071 * doublerAmount;
+                    const double norm = 1.0 / std::sqrt (1.0 + g * g);
+                    w[0][i] = (w[0][i] + g * doubleOutL[(size_t) i]) * norm;
+                    w[1][i] = (w[1][i] + g * doubleOutR[(size_t) i]) * norm;
+                }
+            }
+        }
+    }
+
+    //--- Doubler : têtes à raccords à ≤ 96 kHz (les voix doublées n'ont pas besoin de l'air du DXD) ----------------------
+    static constexpr int kDoublerMaxStages = 3;
+
+    void prepareDoubler()
+    {
+        doublerStages = 0;
+        while (sampleRate / (double) (1 << doublerStages) > 96500.0 && doublerStages < kDoublerMaxStages) ++doublerStages;
+        doublerFactor = 1 << doublerStages;
+        for (auto& d : dblDecim) d.prepare (9.0);
+        for (auto& c : dblInterp) for (auto& st : c) st.prepare (9.0);
+
+        // Retard de la chaîne ÷2^k -> ×2^k (+ file de 2^k échantillons), mesuré sur une impulsion, retiré des 9 / 14 ms.
+        double chain = 0.0;
+        if (doublerStages > 0)
+        {
+            std::vector<double> resp;
+            resetDoubler();
+            for (int i = 0; i < 4096; ++i)
+            {
+                double low = 0.0;
+                if (decimate (i == 0 ? 1.0 : 0.0, low))
+                {
+                    std::array<double, 1 << kDoublerMaxStages> up {};
+                    interpolate (0, low, up.data());
+                    for (int k = 0; k < doublerFactor; ++k) resp.push_back (up[(size_t) k]);
+                }
+            }
+            size_t peak = 0;
+            for (size_t i = 1; i + 1 < resp.size(); ++i) if (std::abs (resp[i]) > std::abs (resp[peak])) peak = i;
+            const double a = resp[peak > 0 ? peak - 1 : 0], b = resp[peak], c = resp[peak + 1];
+            const double den = a - 2.0 * b + c;
+            chain = (double) peak + (std::abs (den) > 1.0e-12 ? 0.5 * (a - c) / den : 0.0) + (double) doublerFactor - 1.0;
+        }
+        const double fsD = sampleRate / doublerFactor;
+        doubleLeft.prepare (fsD, 1, std::max (0.002, kDoublerDelayLeft - chain / sampleRate));
+        doubleRight.prepare (fsD, 1, std::max (0.002, kDoublerDelayRight - chain / sampleRate));
+        dblFifo.assign ((size_t) (4 * doublerFactor + 8), 0.0);
+        resetDoubler();
+    }
+
+    void resetDoubler() noexcept
+    {
+        doubleLeft.reset(); doubleRight.reset();
+        for (auto& d : dblDecim) d.reset();
+        for (auto& c : dblInterp) for (auto& st : c) st.reset();
+        std::fill (dblFifo.begin(), dblFifo.end(), 0.0);
+        dblFifoRead = 0;
+        dblFifoWrite = doublerStages > 0 ? (std::int64_t) doublerFactor - 1 : 0;     // file amorcée : sortie régulière
+    }
+
+    bool decimate (double x, double& y) noexcept
+    {
+        y = x;
+        for (int s = 0; s < doublerStages; ++s)
+            if (! dblDecim[(size_t) s].push (y, y))
+                return false;
+        return true;
+    }
+
+    /** Une valeur basse cadence -> 2^k valeurs à la fréquence native (canal c). */
+    void interpolate (int c, double u, double* out) noexcept
+    {
+        std::array<double, 1 << kDoublerMaxStages> a {}, b {};
+        a[0] = u;
+        int count = 1;
+        for (int s = 0; s < doublerStages; ++s)
+        {
+            for (int i = 0; i < count; ++i)
+                dblInterp[(size_t) c][(size_t) s].push (a[(size_t) i], b[(size_t) (2 * i)], b[(size_t) (2 * i + 1)]);
+            count *= 2;
+            a = b;
+        }
+        for (int i = 0; i < count; ++i) out[i] = a[(size_t) i];
+    }
+
+    /** doubleIn[0 … len) -> doubleOutL / doubleOutR. */
+    void renderDoubles (int len, double outPeriod) noexcept
+    {
+        const double periodLow = outPeriod / doublerFactor;
+        doubleLeft.setPitch (periodLow, outPeriod > 0.0);
+        doubleRight.setPitch (periodLow, outPeriod > 0.0);
+        doubleLeft.setRatio (std::exp2 (-kDoublerCents / 1200.0));
+        doubleRight.setRatio (std::exp2 (kDoublerCents / 1200.0));
+        if (doublerStages == 0)
+        {
+            const double* inPtr[1] = { doubleIn.data() };
+            double* outL[1] = { doubleOutL.data() };
+            double* outR[1] = { doubleOutR.data() };
+            doubleLeft.process (inPtr, outL, len);
+            doubleRight.process (inPtr, outR, len);
+            return;
+        }
+        const auto size = (std::int64_t) dblFifo.size() / 2;
+        for (int i = 0; i < len; ++i)
+        {
+            double low = 0.0;
+            if (decimate (doubleIn[(size_t) i], low))
+            {
+                double l = 0.0, r = 0.0;
+                const double* inPtr[1] = { &low };
+                double* pl[1] = { &l };
+                double* pr[1] = { &r };
+                doubleLeft.process (inPtr, pl, 1);
+                doubleRight.process (inPtr, pr, 1);
+                std::array<double, 1 << kDoublerMaxStages> ul {}, ur {};
+                interpolate (0, l, ul.data());
+                interpolate (1, r, ur.data());
+                for (int k = 0; k < doublerFactor; ++k)
+                {
+                    const auto slot = (size_t) ((dblFifoWrite + k) % size);
+                    dblFifo[2 * slot] = ul[(size_t) k];
+                    dblFifo[2 * slot + 1] = ur[(size_t) k];
+                }
+                dblFifoWrite += doublerFactor;
+            }
+            const auto slot = (size_t) (dblFifoRead % size);
+            doubleOutL[(size_t) i] = dblFifo[2 * slot];
+            doubleOutR[(size_t) i] = dblFifo[2 * slot + 1];
+            ++dblFifoRead;
         }
     }
 
@@ -371,12 +687,35 @@ private:
     std::int64_t studioEpoch = 0;
 
     std::int64_t ringMask = 0, counter = 0;
-    std::array<std::vector<double>, kMaxChannels> rings, inBuf, wetBuf, psolaBuf, studioIn;
+    std::array<std::vector<double>, kMaxChannels> rings, inBuf, wetBuf, psolaBuf, studioIn, dryBuf;
     std::int64_t holdSamples = 2400, lastVoicedPos = 0;
     double lastPeriod = 0.0, lastFreq = 0.0, psolaBlend = 0.0;
     ScaleQuantizer::Result lastQ;
     std::vector<double> mono;
     std::vector<Event> events;
+
+    // étape 5A
+    ThroatModel throatModel;
+    SpliceShifter doubleLeft, doubleRight;
+    int doublerStages = 0, doublerFactor = 1;
+    std::array<detail::HalfBandDecimatorT<12>, kDoublerMaxStages> dblDecim {};
+    std::array<std::array<detail::HalfBandInterpolatorT<12>, kDoublerMaxStages>, 2> dblInterp {};
+    std::vector<double> dblFifo;
+    std::int64_t dblFifoRead = 0, dblFifoWrite = 0;
+    std::vector<double> doubleIn, doubleOutL, doubleOutR;
+    double doublerAmount = 0.0;
+
+    std::vector<QueuedMidi> midiQueue;
+    std::int64_t midiHead = 0, midiTail = 0;
+    std::array<std::uint64_t, 2> held {}, heldForUi {};
+    std::array<std::atomic<std::uint64_t>, 2> uiHeld {};
+    double bendSemis = 0.0;
+
+    AutoKeyDetector autoKey;
+    double keyAnalyseCountdown = 0.0;
+    std::atomic<int>   keyCommand { 0 }, keyResult { -1 };
+    std::atomic<bool>  keyListening { false };
+    std::atomic<float> keyConfidence { 0.0f }, keySeconds { 0.0f };
 };
 
 } // namespace aura::pitch

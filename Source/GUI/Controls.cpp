@@ -5,14 +5,38 @@ namespace nextdsp
 {
 using namespace juce;
 
+void KnobSlider::mouseDown (const MouseEvent& e)
+{
+    if (e.mods.isPopupMenu())
+    {
+        if (isEnabled()) showTextBox();                 // clic droit : saisie au clavier
+        return;
+    }
+    Slider::mouseDown (e);                              // geste (begin/endChangeGesture), Alt-clic = défaut
+    lastDragPos = e.position;
+    dragProportion = valueToProportionOfLength (getValue());
+}
+
+void KnobSlider::mouseDrag (const MouseEvent& e)
+{
+    if (! isEnabled() || e.mods.isPopupMenu())
+        return;
+    // Déplacement relatif depuis le dernier évènement : changer de modificateur en cours de geste ne fait pas sauter
+    // la valeur, seule la sensibilité change.
+    dragProportion = jlimit (0.0, 1.0, dragProportion + dragDelta (e.position - lastDragPos, e.mods));
+    lastDragPos = e.position;
+    setValue (proportionOfLengthToValue (dragProportion), sendNotificationSync);
+}
+
+//==============================================================================================================
 Knob::Knob (AudioProcessorValueTreeState& state, const String& paramId, String t, Colour accent, bool bipolar)
     : title (std::move (t))
 {
     slider.setSliderStyle (Slider::RotaryHorizontalVerticalDrag);
     slider.setRotaryParameters (MathConstants<float>::pi * 1.25f, MathConstants<float>::pi * 2.75f, true);
     slider.setTextBoxStyle (Slider::TextBoxBelow, false, 90, 18);
-    slider.setMouseDragSensitivity (220);
     slider.setVelocityBasedMode (false);
+    slider.setTextBoxIsEditable (true);              // un clic sur la valeur ouvre la saisie
     slider.getProperties().set ("accent", (int64) accent.getARGB());
     slider.getProperties().set ("bipolar", bipolar);
     addAndMakeVisible (slider);
@@ -21,7 +45,8 @@ Knob::Knob (AudioProcessorValueTreeState& state, const String& paramId, String t
     if (auto* p = state.getParameter (paramId))
     {
         slider.setDoubleClickReturnValue (true, (double) p->convertFrom0to1 (p->getDefaultValue()));
-        slider.setTooltip (p->getName (64));
+        slider.setTooltip (p->getName (64) + String (CharPointer_UTF8 (
+            "  \xc2\xb7  drag (Shift / Cmd-Ctrl: fine) \xc2\xb7 double-click: default \xc2\xb7 click value or right-click: type a value")));
     }
 }
 

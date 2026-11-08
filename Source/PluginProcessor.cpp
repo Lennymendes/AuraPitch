@@ -67,13 +67,13 @@ int AuraPitchProcessor::latencyFor (pitch::TrackingMode mode) const noexcept
 }
 
 //==============================================================================================================
-void AuraPitchProcessor::processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer&)          { processTemplated (b, false); }
-void AuraPitchProcessor::processBlock (juce::AudioBuffer<double>& b, juce::MidiBuffer&)         { processTemplated (b, false); }
-void AuraPitchProcessor::processBlockBypassed (juce::AudioBuffer<float>& b, juce::MidiBuffer&)  { processTemplated (b, true); }
-void AuraPitchProcessor::processBlockBypassed (juce::AudioBuffer<double>& b, juce::MidiBuffer&) { processTemplated (b, true); }
+void AuraPitchProcessor::processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer& m)          { processTemplated (b, m, false); }
+void AuraPitchProcessor::processBlock (juce::AudioBuffer<double>& b, juce::MidiBuffer& m)         { processTemplated (b, m, false); }
+void AuraPitchProcessor::processBlockBypassed (juce::AudioBuffer<float>& b, juce::MidiBuffer& m)  { processTemplated (b, m, true); }
+void AuraPitchProcessor::processBlockBypassed (juce::AudioBuffer<double>& b, juce::MidiBuffer& m) { processTemplated (b, m, true); }
 
 template <typename T>
-void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, bool forceBypass) noexcept
+void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, juce::MidiBuffer& midi, bool forceBypass) noexcept
 {
     juce::ScopedNoDenormals noDenormals;
     const int numSamples = buffer.getNumSamples();
@@ -88,7 +88,24 @@ void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, bool fo
     const int nc = juce::jlimit (1, preparedChannels, juce::jmin (numIn, numOut, buffer.getNumChannels()));
     auto p = snapshot.read();
     if (forceBypass)
-        p.mix = 0.0;
+    {
+        p.mix = 0.0; p.throat = 1.0; p.doubler = 0.0;
+    }
+
+    // MIDI -> moteurs (horodaté dans ce bloc). Tous les canaux MIDI ; NoteOn de vélocité 0 = NoteOff.
+    for (const auto meta : midi)
+    {
+        const auto msg = meta.getMessage();
+        pitch::MidiTargetEvent ev;
+        if (msg.isNoteOn())                                         ev = { pitch::MidiTargetEvent::NoteOn, msg.getNoteNumber(), 0.0 };
+        else if (msg.isNoteOff (true))                              ev = { pitch::MidiTargetEvent::NoteOff, msg.getNoteNumber(), 0.0 };
+        else if (msg.isPitchWheel())                                ev = { pitch::MidiTargetEvent::PitchBend, 0, (msg.getPitchWheelValue() - 8192) / 8192.0 };
+        else if (msg.isAllNotesOff() || msg.isAllSoundOff())        ev = { pitch::MidiTargetEvent::AllNotesOff, 0, 0.0 };
+        else continue;
+        const int offset = juce::jlimit (0, juce::jmax (0, numSamples - 1), meta.samplePosition);
+        for (auto* e : { linked.get(), left.get(), right.get() })
+            e->addMidiEvent (ev, offset);
+    }
 
     linked->setParameters (p);
     left->setParameters (p);
@@ -134,6 +151,42 @@ void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, bool fo
 }
 
 //==============================================================================================================
+const pitch::AuraPitchEngine& AuraPitchProcessor::shownEngine() const noexcept
+{
+    return activeChannelMode.load() == (int) params::ChannelMode::DualMono ? *left : *linked;
+}
+
+void AuraPitchProcessor::startKeyDetection()
+{
+    for (auto* e : { linked.get(), left.get(), right.get() }) e->startKeyDetection();
+}
+
+void AuraPitchProcessor::stopKeyDetection()
+{
+    for (auto* e : { linked.get(), left.get(), right.get() }) e->stopKeyDetection();
+}
+
+bool AuraPitchProcessor::isKeyDetectionListening() const noexcept { return shownEngine().isKeyDetectionListening(); }
+
+pitch::AutoKeyDetector::Result AuraPitchProcessor::getKeyDetection() const noexcept { return shownEngine().getKeyDetection(); }
+
+std::array<std::uint64_t, 2> AuraPitchProcessor::getHeldMidiNotes() const noexcept { return shownEngine().getHeldMidiNotes(); }
+
+void AuraPitchProcessor::applyKey (int keyIndex, bool minor)
+{
+    auto set = [this] (const char* id, float value)
+    {
+        if (auto* prm = state.getParameter (id))
+        {
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (prm->convertTo0to1 (value));
+            prm->endChangeGesture();
+        }
+    };
+    set (params::key, (float) juce::jlimit (0, 11, keyIndex));
+    set (params::scale, (float) (minor ? (int) pitch::ScaleType::Minor : (int) pitch::ScaleType::Major));
+}
+
 void AuraPitchProcessor::timerCallback() { syncLatency(); }
 
 void AuraPitchProcessor::syncLatency()

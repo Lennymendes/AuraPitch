@@ -162,6 +162,39 @@ public:
         return r;
     }
 
+    /** Mode MIDI Target : la cible est la note MIDI tenue la plus proche de la voix (note absolue, pas de repli
+        d'octave : une voix en A3 avec C4 tenu va à C4), plus le Pitch Bend (demi-tons). Même hystérésis que la gamme
+        quand plusieurs notes sont tenues. held vide : quantification par la gamme. */
+    Result quantizeToNotes (double inputMidi, const std::array<std::uint64_t, 2>& held, double bendSemitones) noexcept
+    {
+        if (held[0] == 0 && held[1] == 0)
+            return quantize (inputMidi);
+        if (! std::isfinite (inputMidi))
+            return bypass (inputMidi);
+
+        auto isHeld = [&] (int n) { return n >= 0 && n < 128 && ((held[(size_t) (n >> 6)] >> (n & 63)) & 1u) != 0; };
+        int best = kNoNote;
+        double bestDist = 1.0e9;
+        for (int n = 0; n < 128; ++n)
+            if (isHeld (n))
+            {
+                const double d = std::abs (inputMidi - (double) n);
+                if (d < bestDist) { bestDist = d; best = n; }
+            }
+        if (currentNote != kNoNote && best != currentNote && isHeld (currentNote)
+             && std::abs (inputMidi - (double) currentNote) < bestDist + hysteresis)
+            best = currentNote;
+        currentNote = best;
+
+        Result r;
+        r.inputMidi      = inputMidi;
+        r.targetMidi     = (double) best + bendSemitones;
+        r.deviationCents = (inputMidi - r.targetMidi) * 100.0;
+        r.targetNote     = best;
+        r.bypassed       = false;
+        return r;
+    }
+
 private:
     static constexpr Mask bits (std::initializer_list<int> intervals) noexcept
     {
@@ -241,9 +274,18 @@ public:
     void setTranspose (double semitones) noexcept { transpose = std::clamp (semitones, -24.0, 24.0); }
     void setFineTuneCents (double cents) noexcept { fineTune = std::clamp (cents, -100.0, 100.0) / 100.0; }
 
+    /** Transition (Flex), 0 … 200 ms. Quand la voix bouge vite (glissando, slide d'attaque, inflexion : plus de
+        6 dt/s sur 10 ms), la correction est figée à sa valeur d'avant le mouvement : la sortie suit la voix telle
+        qu'elle est chantée, sans escalier. Dès que la voix se pose (moins de 3 dt/s), ou à une nouvelle attaque, la
+        correction rejoint la note cible en Transition ms (courbe en S), puis la note est tenue à la vitesse Retune.
+        0 = comportement de l'étape 4 (rien de tout cela n'est calculé). */
+    void setTransitionMs (double ms) noexcept     { transition = std::clamp (ms, 0.0, kMaxTransitionMs) / 1000.0; }
+    static constexpr double kMaxTransitionMs = 200.0;
+
     void reset() noexcept
     {
         correction = 0.0; lastTarget = ScaleQuantizer::kNoNote; noteTime = 0.0; unvoicedTime = 1.0;
+        historyCount = 0; historyPos = 0; moving = false; anchor = settleFrom = 0.0; settleTime = 1.0e9;
     }
 
     /** Avance la courbe de dt secondes (une trame d'analyse du PitchDetector) et renvoie le décalage total en
@@ -255,18 +297,22 @@ public:
         if (voiced && ! q.bypassed)
         {
             unvoicedTime = 0.0;
-            if (q.targetNote != lastTarget) { lastTarget = q.targetNote; noteTime = 0.0; }
-            else                            { noteTime += dtSeconds; }
+            const bool noteChanged = q.targetNote != lastTarget;
+            if (noteChanged) { lastTarget = q.targetNote; noteTime = 0.0; }
+            else             { noteTime += dtSeconds; }
 
             const double sustain = smoothstep ((noteTime - kHumanizeStart) / (kHumanizeFull - kHumanizeStart));
             const double tau     = retuneTau + humanize * sustain * kHumanizeTau;
-            const double desired = q.targetMidi - q.inputMidi;
+            double desired = q.targetMidi - q.inputMidi;
+            if (transition > 0.0)
+                desired = flex (q.inputMidi, desired, noteChanged, dtSeconds);
             correction += onePole (tau, dtSeconds) * (desired - correction);
         }
         else
         {
             lastTarget = ScaleQuantizer::kNoNote;
             noteTime   = 0.0;
+            historyCount = 0; moving = false;
             unvoicedTime += dtSeconds;
             if (q.bypassed && voiced)        // note bypass : retour naturel, à la vitesse de retune
                 correction += onePole (std::max (retuneTau, kReleaseTau), dtSeconds) * (0.0 - correction);
@@ -282,6 +328,57 @@ public:
     double getPitchRatio() const noexcept          { return semitonesToRatio (getShiftSemitones()); }
 
 private:
+    /** Transition : décalage voulu, compte tenu du mouvement de la voix. */
+    double flex (double inputMidi, double target, bool noteChanged, double dt) noexcept
+    {
+        // Historique (hauteur, correction) des ~10 dernières ms : vitesse de la voix, et correction d'avant le mouvement.
+        const int back = std::clamp ((int) std::lround (kFlexWindow / std::max (dt, 1.0e-4)), 1, kHistory - 1);
+        history[(size_t) (historyPos % kHistory)] = { inputMidi, correction };
+        ++historyPos;
+        historyCount = std::min (historyCount + 1, kHistory);
+
+        double velocity = 0.0;
+        if (historyCount > back)
+        {
+            const auto& old = history[(size_t) ((historyPos - 1 - back) % kHistory)];
+            velocity = std::abs (inputMidi - old.input) / (back * dt);
+            if (! moving && velocity > kFlexOn)
+            {
+                moving = true;
+                anchor = old.correction;               // la correction telle qu'elle était avant le mouvement
+            }
+        }
+        if (moving && velocity < kFlexOff)
+        {
+            moving = false;
+            settleFrom = correction; settleTime = 0.0;
+        }
+        if (moving)
+            return anchor;
+        if (noteChanged)
+        {
+            settleFrom = correction; settleTime = 0.0;
+        }
+        if (settleTime < transition)
+        {
+            const double w = smoothstep (settleTime / transition);
+            settleTime += dt;
+            return settleFrom + w * (target - settleFrom);
+        }
+        return target;
+    }
+
+    static constexpr int    kHistory    = 32;
+    static constexpr double kFlexWindow = 0.010;     // s
+    static constexpr double kFlexOn     = 6.0;       // dt/s
+    static constexpr double kFlexOff    = 3.0;
+    struct HistoryPoint { double input = 0.0, correction = 0.0; };
+    std::array<HistoryPoint, kHistory> history {};
+    std::int64_t historyPos = 0;
+    int    historyCount = 0;
+    bool   moving = false;
+    double anchor = 0.0, settleFrom = 0.0, settleTime = 1.0e9;
+
     static constexpr double kHumanizeStart = 0.080;
     static constexpr double kHumanizeFull  = 0.300;
     static constexpr double kHumanizeTau   = 0.350;
@@ -293,6 +390,7 @@ private:
 
     double retuneTau    = 0.0;
     double humanize     = 0.0;
+    double transition   = 0.0;
     double transpose    = 0.0;
     double fineTune     = 0.0;
     double correction   = 0.0;

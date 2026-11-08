@@ -17,11 +17,31 @@ PitchGraph::PitchGraph()
 {
     points.resize (16384);
     setOpaque (false);
+    freezeButton.setClickingTogglesState (true);
+    freezeButton.getProperties().set ("accent", (int64) colours::cyan.getARGB());
+    freezeButton.setTooltip ("Freeze the pitch history (audio keeps running)");
+    freezeButton.onClick = [this] { setFrozen (freezeButton.getToggleState()); };
+    addAndMakeVisible (freezeButton);
+}
+
+void PitchGraph::setFrozen (bool shouldFreeze)
+{
+    frozen = shouldFreeze;
+    freezeButton.setToggleState (frozen, dontSendNotification);
+    freezeButton.setButtonText (frozen ? "FROZEN" : "FREEZE");
+    repaint();
+}
+
+void PitchGraph::resized()
+{
+    // en haut, à gauche de la légende
+    const auto legend = getLocalBounds().reduced (14, 6).removeFromTop (20);
+    freezeButton.setBounds (legend.withTrimmedRight (240).removeFromRight (72));
 }
 
 void PitchGraph::push (const aura::pitch::PitchFrame& f, double sampleRate)
 {
-    if (sampleRate <= 0.0) return;
+    if (sampleRate <= 0.0 || frozen) return;     // figé : les trames sont lues (la FIFO ne déborde pas) mais ignorées
     const double t = (double) f.samplePosition / sampleRate;
     if (count > 0 && t + 1.0 < latestTime)          // horloge remise à zéro (prepareToPlay, changement de fs)
     {
@@ -37,6 +57,7 @@ void PitchGraph::push (const aura::pitch::PitchFrame& f, double sampleRate)
 
 void PitchGraph::tick (double dt)
 {
+    if (frozen) return;
     // Défilement : on suit l'horloge audio avec un léger lissage (les trames arrivent par paquets de blocs).
     displayTime += dt;
     const double err = latestTime - displayTime;
@@ -92,6 +113,14 @@ void PitchGraph::paint (Graphics& g)
             const float y = yFor ((float) m, a);
             const int pc = ((m % 12) + 12) % 12;
             const bool inScale = ((mask >> pc) & 1u) != 0;
+            const bool midiHeld = m >= 0 && m < 128 && ((midiNotes[(size_t) (m >> 6)] >> (m & 63)) & 1u) != 0;
+            if (midiHeld)
+            {
+                g.setColour (colours::amber.withAlpha (0.10f));
+                g.fillRect (Rectangle<float> (a.getX(), y - rowH * 0.5f, a.getWidth(), rowH));
+                g.setColour (colours::amber.withAlpha (0.55f));
+                g.drawHorizontalLine (roundToInt (y), a.getX(), a.getRight());
+            }
             if (m == targetNote)
             {
                 g.setColour (colours::cyan.withAlpha (0.07f));
@@ -102,11 +131,14 @@ void PitchGraph::paint (Graphics& g)
                 g.setColour (Colours::white.withAlpha (0.018f));
                 g.fillRect (Rectangle<float> (a.getX(), y - rowH * 0.5f, a.getWidth(), rowH));
             }
-            g.setColour (inScale ? colours::grid.brighter (0.25f) : colours::grid);
-            g.drawHorizontalLine (roundToInt (y), a.getX(), a.getRight());
+            if (! midiHeld)
+            {
+                g.setColour (inScale ? colours::grid.brighter (0.25f) : colours::grid);
+                g.drawHorizontalLine (roundToInt (y), a.getX(), a.getRight());
+            }
 
             g.setFont (monoFont (jlimit (9.0f, 11.5f, rowH * 0.62f)));
-            g.setColour (m == targetNote ? colours::cyan : inScale ? colours::textDim : colours::textFaint);
+            g.setColour (m == targetNote ? colours::cyan : midiHeld ? colours::amber : inScale ? colours::textDim : colours::textFaint);
             g.drawText (midiNoteName (m), Rectangle<float> (4.0f, y - 8.0f, 38.0f, 16.0f).toNearestInt(),
                         pc == key ? Justification::centredRight : Justification::centredRight);
         }

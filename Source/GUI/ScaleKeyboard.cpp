@@ -147,6 +147,16 @@ void ScaleKeyboard::paint (Graphics& g)
         const auto label = b.withTrimmedBottom (black ? 6.0f : 14.0f).removeFromBottom (14.0f);
         g.drawText (s == 1 ? String ("BYP") : String (names[pc]), label, Justification::centred);
 
+        if (((midiMask >> pc) & 1u) != 0)          // note MIDI tenue
+        {
+            g.setColour (colours::amber.withAlpha (0.22f));
+            g.fillRoundedRectangle (b, 4.0f);
+            g.setColour (colours::amber.withAlpha (0.35f));
+            g.drawRoundedRectangle (b.expanded (1.5f), 5.5f, 2.5f);
+            g.setColour (colours::amber);
+            g.drawRoundedRectangle (b, 4.0f, 1.2f);
+        }
+
         if (pc == key)
         {
             g.setColour (colours::text);

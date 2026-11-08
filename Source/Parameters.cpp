@@ -98,6 +98,21 @@ APVTS::ParameterLayout createLayout()
         AudioParameterFloatAttributes().withLabel ("%")
             .withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " %"; })));
 
+    // étape 5A (version 2 des identifiants : nouveaux paramètres, les sessions de la v1 restent compatibles)
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { transition, 2 }, "Transition (Flex)", NormalisableRange<float> (0.0f, 200.0f, 0.1f), 0.0f,
+        AudioParameterFloatAttributes().withLabel ("ms")
+            .withStringFromValueFunction ([] (float v, int) { return v < 10.0f ? String (v, 1) + " ms" : String (juce::roundToInt (v)) + " ms"; })
+            .withValueFromStringFunction ([] (const String& t) { return t.getFloatValue(); })));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { throat, 2 }, "Throat Length", NormalisableRange<float> (80.0f, 120.0f, 0.1f), 100.0f,
+        AudioParameterFloatAttributes().withLabel ("%")
+            .withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " %"; })
+            .withValueFromStringFunction ([] (const String& t) { return t.getFloatValue(); })));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { doubler, 2 }, "Doubler Width", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
+        AudioParameterFloatAttributes().withLabel ("%")
+            .withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " %"; })
+            .withValueFromStringFunction ([] (const String& t) { return t.getFloatValue(); })));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { midiTarget, 2 }, "MIDI Target", false));
+
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { channelMode, 1 }, "Channel Mode", channelModeNames(), 0));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { bypass, 1 }, "Bypass", false));
 
@@ -122,6 +137,7 @@ void Snapshot::attach (APVTS& s)
     preserveV  = p (s, formantPreserve); transposeV = p (s, transpose); fineV = p (s, fineTune);
     a4V        = p (s, referenceA4); modeV = p (s, trackingMode);   mixV = p (s, mix);
     channelV   = p (s, channelMode); bypassV = p (s, bypass);
+    transitionV = p (s, transition); throatV = p (s, throat); doublerV = p (s, doubler); midiV = p (s, midiTarget);
     for (int pc = 0; pc < 12; ++pc)
         notesV[(size_t) pc] = p (s, noteId (pc));
 }
@@ -145,6 +161,10 @@ pitch::AuraPitchParams Snapshot::read() const noexcept
     r.referenceA4     = val (a4V);
     r.mode            = idx (modeV) == 1 ? TrackingMode::Studio : TrackingMode::Live;
     r.mix             = bypassed() ? 0.0 : val (mixV) / 100.0;
+    r.transitionMs    = val (transitionV);
+    r.throat          = bypassed() ? 1.0 : val (throatV) / 100.0;   // bypass : Throat se retire aussi (Dry exact)
+    r.doubler         = bypassed() ? 0.0 : val (doublerV) / 100.0;
+    r.midiTarget      = val (midiV) > 0.5;
     for (int pc = 0; pc < 12; ++pc)
         r.customNotes[(size_t) pc] = (NoteState) std::clamp (idx (notesV[(size_t) pc]), 0, 2);
     return r;

@@ -21,12 +21,14 @@ static void setParam (AuraPitchProcessor& p, const char* id, float value)
 static void pumpMessages (AuraPitchProcessor& p) { p.syncLatency(); }
 
 template <typename T>
-static std::vector<std::vector<double>> run (AuraPitchProcessor& p, const std::vector<std::vector<double>>& in, int block)
+static std::vector<std::vector<double>> run (AuraPitchProcessor& p, const std::vector<std::vector<double>>& in, int block,
+                                             const std::vector<std::pair<size_t, juce::MidiMessage>>& events = {})
 {
     const int nc = (int) in.size();
     const size_t len = in[0].size();
     juce::AudioBuffer<T> buf (nc, block);
     juce::MidiBuffer midi;
+    size_t nextEvent = 0;
     std::vector<std::vector<double>> out ((size_t) nc, std::vector<double> (len));
     for (size_t pos = 0; pos < len; pos += (size_t) block)
     {
@@ -34,6 +36,12 @@ static std::vector<std::vector<double>> run (AuraPitchProcessor& p, const std::v
         buf.setSize (nc, n, false, false, true);
         for (int ch = 0; ch < nc; ++ch)
             for (int i = 0; i < n; ++i) buf.setSample (ch, i, (T) in[(size_t) ch][pos + (size_t) i]);
+        midi.clear();
+        while (nextEvent < events.size() && events[nextEvent].first < pos + (size_t) n)
+        {
+            midi.addEvent (events[nextEvent].second, (int) (events[nextEvent].first - std::min (pos, events[nextEvent].first)));
+            ++nextEvent;
+        }
         p.processBlock (buf, midi);
         for (int ch = 0; ch < nc; ++ch)
             for (int i = 0; i < n; ++i) out[(size_t) ch][pos + (size_t) i] = (double) buf.getSample (ch, i);
@@ -63,7 +71,7 @@ static void testParameters()
     std::printf ("  %d paramètres, %d presets d'usine :", params.size(), p->getNumPrograms());
     for (int i = 0; i < p->getNumPrograms(); ++i) std::printf (" « %s »", p->getProgramName (i).toRawUTF8());
     std::printf ("\n");
-    check (params.size() == 26, "26 paramètres (14 + 12 notes)");
+    check (params.size() == 30, "30 paramètres (18 + 12 notes)");
     check (p->getNumPrograms() == 4, "4 presets d'usine");
 
     for (const char* id : { P::inputType, P::key, P::scale, P::retuneSpeed, P::humanize, P::formantShift, P::formantPreserve,
@@ -276,15 +284,172 @@ static void testEditor()
     ed.reset();
 }
 
+//==================================================================================================================
+static juce::MouseEvent mouseAt (juce::Component& c, juce::Point<float> pos, juce::ModifierKeys mods, int clicks = 1)
+{
+    auto src = juce::Desktop::getInstance().getMainMouseSource();
+    const auto now = juce::Time::getCurrentTime();
+    return juce::MouseEvent (src, pos, mods, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, &c, &c, now, pos, now, clicks, false);
+}
+
+static void testStep5A()
+{
+    std::printf ("\n[5] Étape 5A : paramètres, MIDI Target par l'hôte, bypass avec Throat, ergonomie de l'éditeur\n");
+    {
+        auto p = makeProcessor (48000, 2);
+        check (p->acceptsMidi(), "le plug-in accepte le MIDI (NEEDS_MIDI_INPUT)");
+        auto txt = [&] (const char* id) { auto* q = p->getState().getParameter (id); return q->getText (q->getValue(), 32); };
+        std::printf ("  Transition « %s », Throat « %s », Doubler « %s », MIDI « %s »\n", txt (P::transition).toRawUTF8(),
+                     txt (P::throat).toRawUTF8(), txt (P::doubler).toRawUTF8(), txt (P::midiTarget).toRawUTF8());
+        check (txt (P::transition) == "0.0 ms" && txt (P::throat) == "100.0 %" && txt (P::doubler) == "0 %",
+               "nouveaux paramètres : valeurs par défaut neutres (0 ms, 100 %, 0 %)");
+        check (p->getParameters().size() == 30, "30 paramètres (26 + Transition, Throat, Doubler, MIDI Target)");
+    }
+
+    // MIDI Target par processBlock : NoteOn C4 au milieu d'un bloc, NoteOn vélocité 0 = NoteOff
+    for (double fs : { 48000.0, 384000.0 })
+    {
+        auto p = makeProcessor (fs, 2);
+        setParam (*p, P::retuneSpeed, 0); setParam (*p, P::scale, 0); setParam (*p, P::midiTarget, 1);
+        pumpMessages (*p);
+        auto v = makeVowel (fs, 3.0, [] (double) { return 220.0 * std::exp2 (15.0 / 1200.0); });
+        auto out = run<float> (*p, { v, v }, 512, { { (size_t) (0.5 * fs) + 77, juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100) },
+                                                    { (size_t) (1.8 * fs) + 3, juce::MidiMessage::noteOn (1, 60, (juce::uint8) 0) } });
+        const auto held = p->getHeldMidiNotes();
+        const auto c4 = measurePitch (out[0], fs, 261.6256, 0.9, 1.7);
+        const auto a3 = measurePitch (out[0], fs, 220.0, 2.2, 2.9);
+        std::printf ("  %5.1f k : NoteOn C4 -> %+5.2f c (max %.2f) · NoteOn vélocité 0 -> A3 %+5.2f c\n", fs / 1000, c4.meanCents, c4.maxCents, a3.meanCents);
+        check (std::abs (c4.meanCents) < 1.0 && c4.voicedRatio > 0.95, "MIDI de l'hôte : A3 -> C4 exact");
+        check (std::abs (a3.meanCents) < 1.0 && held[0] == 0, "NoteOn de vélocité 0 = NoteOff");
+    }
+
+    // Bypass avec Throat 112 % et Doubler 50 % : la sortie redevient le Dry retardé exact
+    {
+        const double fs = 48000;
+        auto p = makeProcessor (fs, 2);
+        setParam (*p, P::throat, 112); setParam (*p, P::doubler, 50); setParam (*p, P::trackingMode, 0);
+        pumpMessages (*p);
+        auto v = makeVowel (fs, 1.0, [] (double t) { return 200.0 + 30.0 * t; });
+        run<double> (*p, { v, v }, 256);
+        setParam (*p, P::bypass, 1);
+        auto out = run<double> (*p, { v, v }, 256);
+        const int lat = p->getLatencySamples();
+        double worst = 0;
+        for (size_t i = (size_t) (0.3 * fs); i < v.size(); ++i)
+            worst = std::max (worst, std::abs (out[0][i] - v[i - (size_t) lat]));
+        std::printf ("  bypass avec Throat 112 %% + Doubler 50 %% : écart au Dry retardé %.2g\n", worst);
+        check (worst < 1.0e-12, "bypass : Throat et Doubler se retirent, Dry retardé exact");
+    }
+
+    // Éditeur : glissé fin, double-clic, saisie au clavier, FREEZE, AUTO-KEY
+    {
+        const double fs = 48000;
+        auto p = makeProcessor (fs, 2);
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
+        auto* editor = dynamic_cast<AuraPitchEditor*> (ed.get());
+        auto& knob = editor->getKnob (P::throat);
+        auto& s = knob.slider;
+        auto* param = p->getState().getParameter (P::throat);
+        const juce::Point<float> c0 = s.getLocalBounds().getCentre().toFloat();
+
+        s.mouseDown (mouseAt (s, c0, juce::ModifierKeys::leftButtonModifier));
+        s.mouseDrag (mouseAt (s, c0 + juce::Point<float> (0, -44), juce::ModifierKeys::leftButtonModifier));
+        s.mouseUp (mouseAt (s, c0 + juce::Point<float> (0, -44), juce::ModifierKeys::leftButtonModifier));
+        const float coarse = param->convertFrom0to1 (param->getValue());
+        s.mouseDown (mouseAt (s, c0, juce::ModifierKeys::leftButtonModifier));
+        s.mouseDrag (mouseAt (s, c0 + juce::Point<float> (0, -44), juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier)));
+        s.mouseUp (mouseAt (s, c0 + juce::Point<float> (0, -44), juce::ModifierKeys::leftButtonModifier));
+        const float fine = param->convertFrom0to1 (param->getValue());
+        std::printf ("  Throat : glissé de 44 px -> %.1f %% ; puis 44 px avec Maj -> %.1f %% (+%.2f, ×%.2f plus fin)\n",
+                     coarse, fine, fine - coarse, (coarse - 100.0f) / (fine - coarse));
+        check (std::abs (coarse - 108.0f) < 0.2f, "glissé : 220 px pour toute la course (44 px = 20 %)");
+        check (std::abs ((coarse - 100.0f) / (fine - coarse) - 5.0f) < 0.3f, "glissé fin (Maj) : sensibilité ÷ 5");
+
+        s.mouseDoubleClick (mouseAt (s, c0, juce::ModifierKeys::leftButtonModifier, 2));
+        check (std::abs (param->convertFrom0to1 (param->getValue()) - 100.0f) < 1.0e-3f, "double-clic : valeur par défaut");
+
+        // clic droit -> saisie ; « 3.5 » dans Retune
+        auto& rk = editor->getKnob (P::retuneSpeed).slider;
+        rk.mouseDown (mouseAt (rk, rk.getLocalBounds().getCentre().toFloat(), juce::ModifierKeys::rightButtonModifier));
+        juce::Label* label = nullptr;
+        for (auto* child : rk.getChildren()) if (auto* l = dynamic_cast<juce::Label*> (child)) label = l;
+        const bool editing = label != nullptr && label->getCurrentTextEditor() != nullptr;
+        if (editing)
+        {
+            label->getCurrentTextEditor()->setText ("3.5", false);
+            label->hideEditor (false);
+        }
+        const float typed = p->getState().getRawParameterValue (P::retuneSpeed)->load();
+        std::printf ("  clic droit sur Retune -> saisie %s ; « 3.5 » -> %.2f ms ; clic simple sur la valeur : %s\n",
+                     editing ? "ouverte" : "absente", typed, label != nullptr && label->isEditableOnSingleClick() ? "édition" : "non");
+        check (editing && std::abs (typed - 3.5f) < 1.0e-3f, "clic droit : saisie au clavier de la valeur exacte");
+        check (label != nullptr && label->isEditableOnSingleClick(), "clic sur la valeur : saisie au clavier");
+
+        auto& graph = editor->getGraph();
+        auto click = [] (juce::Button& b)       // ce que fait un clic (bouton à bascule) : état puis onClick
+        {
+            b.setToggleState (! b.getToggleState(), juce::dontSendNotification);
+            if (b.onClick) b.onClick();
+        };
+        click (graph.freezeButton);
+        check (graph.isFrozen() && graph.freezeButton.getButtonText() == "FROZEN", "FREEZE : graphe figé");
+        click (graph.freezeButton);
+        check (! graph.isFrozen(), "FREEZE : reprise");
+
+        // AUTO-KEY : mélodie en Si mineur chantée, détection puis application à Key / Scale
+        editor->autoKeyClicked();
+        check (editor->getAutoKeyButton().getButtonText().startsWith ("LISTENING"), "AUTO-KEY : écoute");
+        const int notes[] = { 59, 62, 66, 64, 62, 61, 59, 57, 59, 66, 67, 66, 64, 62, 61, 59, 62, 66, 71, 69, 67, 66, 62, 59 };
+        auto mel = makeVowel (fs, 9.0, [&] (double t) { return 440.0 * std::exp2 ((notes[std::min (23, (int) (t / 0.37))] - 69 + 0.1 * std::sin (t * 3.0)) / 12.0); });
+        for (size_t pos = 0; pos < mel.size(); pos += (size_t) (fs / 30))
+        {
+            const size_t end = std::min (mel.size(), pos + (size_t) (fs / 30));
+            std::vector<double> chunk (mel.begin() + (long) pos, mel.begin() + (long) end);
+            run<float> (*p, { chunk, chunk }, 512);
+            editor->pullFramesForTest (1.0 / 30.0);
+        }
+        const auto txtKey = editor->getAutoKeyButton().getButtonText();
+        const int keyNow = (int) p->getState().getRawParameterValue (P::key)->load();
+        const int scaleNow = (int) p->getState().getRawParameterValue (P::scale)->load();
+        std::printf ("  AUTO-KEY -> « %s » ; Key = %s, Scale = %s\n", txtKey.toRawUTF8(), P::noteNames()[keyNow].toRawUTF8(), P::scaleNames()[scaleNow].toRawUTF8());
+        check (txtKey.startsWith ("B MINOR") && keyNow == 11 && scaleNow == 2, "AUTO-KEY : Si mineur détecté et appliqué");
+
+        // MIDI : touches éclairées
+        setParam (*p, P::midiTarget, 1);
+        setParam (*p, P::doubler, 35); setParam (*p, P::throat, 108); setParam (*p, P::transition, 60);
+        auto v = makeVowel (fs, 1.2, [] (double t) { return 300.0 * std::exp2 (0.3 * std::sin (2 * kPi * 0.7 * t) / 12.0); });
+        for (size_t pos = 0; pos < v.size(); pos += (size_t) (fs / 30))
+        {
+            const size_t end = std::min (v.size(), pos + (size_t) (fs / 30));
+            std::vector<double> chunk (v.begin() + (long) pos, v.begin() + (long) end);
+            std::vector<std::pair<size_t, juce::MidiMessage>> ev;
+            if (pos == 0) ev = { { 100, juce::MidiMessage::noteOn (1, 64, (juce::uint8) 90) }, { 120, juce::MidiMessage::noteOn (1, 59, (juce::uint8) 90) } };
+            run<float> (*p, { chunk, chunk }, 512, ev);
+            editor->pullFramesForTest (1.0 / 30.0);
+        }
+        check (((p->getHeldMidiNotes()[1] >> (64 - 64)) & 1u) != 0, "MIDI : note tenue visible par l'interface (E4)");
+        {
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
+            auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("aurapitch_editor_5a.png");
+            file.deleteFile();
+            juce::FileOutputStream os (file);
+            juce::PNGImageFormat().writeImageToStream (img, os);
+            std::printf ("  capture : %s\n", file.getFullPathName().toRawUTF8());
+        }
+        ed.reset();
+    }
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
     std::setvbuf (stdout, nullptr, _IONBF, 0);     // journal complet même en cas de plantage (CI)
-    std::printf ("AuraPitch — banc du plug-in (étape 3)\n");
+    std::printf ("AuraPitch — banc du plug-in (étapes 3 et 5A)\n");
     testParameters();
     testLatency();
     testProcessing();
     testEditor();
+    testStep5A();
     std::printf ("\n%d / %d vérifications passent\n", gChecks - gFailures, gChecks);
     return gFailures == 0 ? 0 : 1;
 }

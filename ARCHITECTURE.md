@@ -1,4 +1,4 @@
-# AuraPitch 1.0 — NextDSP · architecture (étapes 1 à 4)
+# AuraPitch 1.0 — NextDSP · architecture (étapes 1 à 5A)
 
 Correction de hauteur et Pitch & Formant Shifter, VST3 / AU / Standalone, C++20 · JUCE 8.0.15 (même version
 qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 352,8 / 384 kHz, entrée/sortie
@@ -16,6 +16,10 @@ qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 3
   différentiel en Studio, voisement maintenu 50 ms. Banc `aurapitch_realvoice_test` **32 / 32** ; banc de l'étape 2
   adapté : **134 / 134**. Latence Studio ramenée de ≈ 110 ms à ≈ 56–62 ms. CI au vert sur macOS (auval),
   Windows x64 et Linux, les quatre bancs, aucun avertissement du compilateur dans le code AuraPitch.
+- Étape 5A : moteur expressif (Flex / Transition, Throat, Doubler, Auto-Key, MIDI Target) et ergonomie de l'éditeur
+  (glissé fin, saisie au clavier, FREEZE, AUTO-KEY, MIDI). Banc `aurapitch_step5a_test` **209 / 209**, banc du
+  plug-in **73 / 73**. Réglages neutres (Throat 100 %, Doubler 0 %, Transition 0, MIDI Off) : sortie **identique au
+  bit près** à celle de l'étape 4 (vérifié contre le commit `0afb1e8`, 6 fréquences, Live et Studio).
 - Les bancs DSP passent avec GCC 13 et Clang 18 ; AddressSanitizer + UBSan et ThreadSanitizer ne signalent rien
   (seul le budget CPU échoue sous sanitizer, ce qui est attendu). Les en-têtes compilent sans aucun avertissement
   (`-Wall -Wextra -Wshadow -Wconversion -Wpedantic`).
@@ -34,11 +38,12 @@ AuraPitch/
 │   │   ├── Interpolator.h             ✅ étape 4 : sinc fenêtré Kaiser 48 points, 512 phases, 29 bancs anti-repliement
 │   │   ├── PSOLAShifter.h             ✅ TD-PSOLA (effets) : marques par corrélation locale, grains sinc, fondu V/UV
 │   │   ├── StudioFormantFilter.h      ✅ étape 4 : Studio/DXD = découpe « delta » + raccords + filtre de formants différentiel
-│   │   ├── FormantProcessor.h         ✅ enveloppe vraie (cepstre itératif), déformation des formants
+│   │   ├── FormantProcessor.h         ✅ enveloppe vraie (cepstre itératif) ; ThroatModel (étape 5A)
+│   │   ├── AutoKeyDetector.h          ✅ étape 5A : histogramme chromatique -> tonalité + confiance
 │   │   ├── FFT.h                      ✅ FFT réelle double (N/2 complexe + séparation)
 │   │   ├── HalfBand.h                 ✅ demi-bandes ÷2 / ×2 génériques, anneau miroir
 │   │   └── LockFreePitchFifo.h        ✅ SPSC statique audio -> interface (PitchFrame)
-│   ├── Parameters.h/.cpp              ✅ APVTS (26 paramètres, identifiants figés), lecture temps réel, 4 presets d'usine
+│   ├── Parameters.h/.cpp              ✅ APVTS (30 paramètres, identifiants figés), lecture temps réel, 4 presets d'usine
 │   ├── PluginProcessor.h/.cpp         ✅ AuraPitchProcessor : 32/64 bits, mono/stéréo/double mono, bypass, latence
 │   └── GUI/
 │       ├── PluginEditor.h/.cpp        ✅ AuraPitchEditor (920 × 600, redimensionnable 900 × 560 … 1800 × 1150)
@@ -51,9 +56,11 @@ AuraPitch/
 │   ├── Step2SelfTest.cpp              ✅ banc étape 2
 │   ├── PluginSelfTest.cpp             ✅ banc étape 3 (processeur + rendu de l'éditeur en PNG)
 │   ├── RealVoiceSelfTest.cpp          ✅ banc étape 4 (voix réaliste : jitter, shimmer, souffle, consonnes, flow rapide)
+│   ├── Step5ASelfTest.cpp             ✅ banc étape 5A (Auto-Key, MIDI, Flex, Throat, Doubler, transparence, CPU, temps réel)
 │   ├── VocalRealism.h                 générateur de voix réaliste, rejet de voix fantôme, écarts par tiers d'octave
 │   └── TestSupport.h                  signaux de test, mesures (F0, formants sur harmoniques, clics)
 ├── docs/screenshot.png                capture rendue par le banc (384 kHz, Studio DXD, 64 bits)
+├── docs/screenshot-5a.png             MIDI Target (notes tenues éclairées), AUTO-KEY appliqué, Throat / Doubler / Flex
 ├── .github/workflows/build.yml        CI : macOS universel + auval, Windows x64, Linux, release sur v*
 └── .gitignore
 ```
@@ -116,7 +123,9 @@ l'entrée retardée de 0 à 1,7·10⁻¹⁶.
 | `getPitchFifo()` | interface | `drain()` des `PitchFrame` |
 
 `AuraPitchParams` : `inputType`, `key`, `scale`, `customNotes[12]`, `retuneMs`, `humanize`, `formantShift`,
-`formantPreserve`, `transpose`, `fineTuneCents`, `referenceA4`, `mode` (Live / Studio), `mix`. Mix est lissé sur
+`formantPreserve`, `transpose`, `fineTuneCents`, `referenceA4`, `mode` (Live / Studio), `mix`, et depuis l'étape 5A
+`transitionMs`, `throat`, `doubler`, `midiTarget`. Méthodes 5A : `addMidiEvent()` (thread audio, avant `process()`),
+`getHeldMidiNotes()`, `startKeyDetection()` / `stopKeyDetection()` / `getKeyDetection()` (interface). Mix est lissé sur
 20 ms et FormantShift sur 30 ms. Un changement de mode fait un fondu de sortie de 5 ms, réinitialise le moteur
 entrant, puis remonte en 5 ms. Le processeur JUCE annonce la nouvelle latence depuis le message thread.
 
@@ -214,6 +223,10 @@ Le décimateur du détecteur vient désormais de `HalfBand.h` (mêmes coefficien
 | `transpose` / `fine_tune` / `reference_a4` | ±24 dt / ±100 c / 415–466 Hz | `transpose`, `fineTuneCents`, `referenceA4` |
 | `tracking_mode` | Live, Studio/DXD | `mode` (change la latence) |
 | `mix` | 0 … 100 % | `mix` |
+| `transition` (5A) | 0 … 200 ms | `transitionMs` |
+| `throat` (5A) | 80 … 120 % | `throat` |
+| `doubler` (5A) | 0 … 100 % | `doubler` |
+| `midi_target` (5A) | On / Off | `midiTarget` |
 
 ## Banc d'essai de l'étape 2 (`aurapitch_engine_test`, 134 vérifications après l'étape 4)
 
@@ -313,11 +326,11 @@ environ deux fois plus lents que cette machine.
   saisissables au clavier, double-clic pour revenir à la valeur par défaut. Interrupteur Preserve ; sélecteurs
   segmentés Input Type et Stereo.
 
-### Banc `aurapitch_plugin_test` (55 vérifications)
+### Banc `aurapitch_plugin_test` (73 vérifications depuis l'étape 5A)
 
 | Mesure | Résultat |
 |---|---|
-| Paramètres, textes avec unités, courbe Retune | 26 paramètres · « 0.0 ms » / « 19 ms » / « 400 ms », « +3.00 st », « 440.0 Hz » |
+| Paramètres, textes avec unités, courbe Retune | 30 paramètres (26 + 4 de l'étape 5A) · « 0.0 ms » / « 19 ms » / « 400 ms », « +3.00 st », « 440.0 Hz » |
 | Presets | 4, appliqués et lus par l'hôte |
 | Latence annoncée, 44,1 / 96 / 352,8 / 384 kHz | Live 88 / 192 / 706 / 768 -> Studio 2 585 / 5 492 / 21 705 / 22 409 -> Live ; inchangée avec Low Male |
 | Hard-tune A3 +35 c, 32 et 64 bits, Live et Studio | +0,00 / +0,01 c |
@@ -371,3 +384,127 @@ cause à corriger à 48 kHz ; aux fréquences DXD, la découpe existante est con
 
 **Limite Live** : le détecteur a 13,5 ms de retard ; un vibrato de ±30 c aplati à Retune 0 laisse un résidu de cet
 ordre (17 c). Studio, qui lit la commande dans le futur, n'a pas ce résidu.
+
+## Étape 5A — moteur expressif et ergonomie
+
+### Transition / Flex (`CorrectionCurve`, `ScaleQuantizer.h`)
+
+Paramètre `transition`, 0 … 200 ms, affiché **FLEX**. Distinct du Retune (vitesse de maintien sur la note) :
+
+- quand la voix bouge vite (plus de 6 dt/s mesurés sur 10 ms : glissando, slide d'attaque, inflexion), la correction
+  est **figée à sa valeur d'avant le mouvement** : la sortie suit la voix telle qu'elle est chantée, sans escalier ;
+- dès que la voix se pose (moins de 3 dt/s, hystérésis), ou à une nouvelle attaque, la correction rejoint la note
+  cible en `transition` ms (courbe en S), puis la note est tenue à la vitesse Retune ;
+- 0 ms : rien n'est calculé, comportement exact de l'étape 4.
+
+Une première version figeait la correction au moment où la voix changeait de note (au milieu du glissé) : le
+hard-tune y corrige déjà de −50 c, et la sortie restait décalée de 50 c pendant tout le glissé. Le banc l'a montré
+(écart de 54 c, contre 10 c une fois l'ancrage placé au début du mouvement).
+
+### MIDI Target (`ScaleQuantizer::quantizeToNotes`, `AuraPitchEngine`, `PluginProcessor`)
+
+- `NEEDS_MIDI_INPUT TRUE`, `acceptsMidi() = true`. L'AU devient un *Music Effect* (`aumf`) : c'est le type qui reçoit
+  du MIDI dans Logic ; `auval -v aumf Aupt Nxds` dans la CI.
+- NoteOn / NoteOff (NoteOn de vélocité 0 = NoteOff), Pitch Bend (±2 dt), All Notes Off / All Sound Off, tous canaux.
+  Chaque évènement est horodaté à l'échantillon (`addMidiEvent (ev, offsetDansLeBloc)`) et rangé dans une file
+  statique de 512 évènements.
+- Live applique l'état MIDI de l'instant traité ; Studio celui du centre de la trame analysée (même alignement que la
+  voix, la latence Studio est donc aussi celle du MIDI).
+- Cible = note tenue **la plus proche** de la voix, en hauteur absolue (une voix en A3 avec C4 tenu va à C4, pas à
+  C3), même hystérésis de 12 c que la gamme entre les notes d'un accord, plus le Pitch Bend. Aucune note tenue : la
+  gamme reprend la main.
+- Les notes tenues sont visibles par l'interface sans délai (atomiques) : touches et lignes de la grille en ambre.
+
+### Auto-Key (`AutoKeyDetector.h`)
+
+- Pendant l'écoute, chaque trame voisée ajoute à sa classe de hauteur le poids durée × clarté × niveau, réparti entre
+  les deux demi-tons voisins selon l'écart en cents.
+- Profils de Temperley (version améliorée de Krumhansl-Schmuckler) pour les 24 tonalités. Décision bayésienne :
+  log P(clé) = N · Σ h(i) log p_clé(i), avec N = 4 notes par seconde voisée. La **confiance** est la probabilité a
+  posteriori de la meilleure tonalité : elle monte avec la durée d'écoute et avec l'écart à la concurrente
+  (souvent la relative : Si mineur / Ré majeur).
+- Commandes par atomiques (interface -> audio) ; analyse toutes les 100 ms sur le thread audio (24 × 12 opérations).
+- Interface : **AUTO-KEY** -> « LISTENING… » puis « Bm 72%… » en direct -> appliqué dès 90 % après au moins 4 s de
+  voix (« B MINOR (94%) » affiché 6 s). Second clic : arrêt et application si ≥ 60 %. 30 s sans verdict : arrêt.
+
+### Throat (`ThroatModel`, `FormantProcessor.h`)
+
+- Analyse : somme mono du Wet, décimée vers 11–12,6 kHz (demi-bandes), trames de 25 ms toutes les 5 ms, LPC d'ordre
+  14 (pré-accentuation 0,94, fenêtre de décalage gaussienne de 20 Hz), racines par Durand-Kerner. Jusqu'à 4 formants
+  (150–4800 Hz, B < 600 Hz), appariés d'une trame à l'autre par proximité en log-fréquence, lissés 12 ms.
+- Déformation : f' = f · τ^(−g(f)), g = 1 jusqu'à 3,5 kHz puis demi-cosinus vers 0 à 5 kHz.
+- Filtre : une cellule par formant, zéros sur (f, B), pôles sur (f', B·f'/f) — même Q, la résonance est étirée comme
+  l'enveloppe —, gain unité à 0 Hz. C'est exactement E(f·τ)/E(f) sous 3,5 kHz pour un conduit tous-pôles.
+- Pourquoi un croisement : les formants déplacés changent aussi la pente 1/f² au-dessus d'eux (±13 à 16 dB à
+  8 kHz pour τ = 80 / 120 %). Les cellules ne filtrent donc que la voie basse d'un croisement **doublement
+  complémentaire** (Butterworth d'ordre 9 à 4,6 kHz, LP = (A1 + A2)/2, HP = (A1 − A2)/2, LP + HP = A1 passe-tout).
+  Au-dessus de 6 kHz la sortie est la voix elle-même. Sans latence, à la fréquence native.
+- τ = 100 % : `isIdle()`, rien n'est calculé. Sinon le Wet entier porte la phase du passe-tout A1 (module plat), et
+  le Dry passe par le même passe-tout : le Mix < 100 % reste sans peigne. Engagement / retrait en 20 ms ; le bypass
+  retire aussi le Throat (Dry retardé exact, vérifié au banc du plug-in).
+- Non voisé : les formants reviennent à l'identité en 10 ms (Wet = Dry à la phase du passe-tout près).
+
+Une première version utilisait des cellules sans normalisation : déplacer un pôle change son gain aux basses
+fréquences, et la voyelle prenait +10 à +12 dB sur h1–h2 à τ = 120 %.
+
+| Mesure (voyelle source-filtre F1–F5, F0 196 Hz, 44,1 / 48 / 96 / 384 kHz, Live et Studio) | τ 80 % | τ 90 % | τ 110 % | τ 120 % |
+|---|---|---|---|---|
+| Déplacement des formants mesuré (attendu) | +4,05 dt (+3,86) | +1,95 (+1,82) | −1,65 (−1,65) | −3,15 (−3,16) |
+| Écart RMS à la déformation idéale E(w⁻¹f)/E(f), 150 Hz – 3,3 kHz | 1,4 dB | 1,3 dB | 2,2–2,4 dB | 3,0–3,3 dB |
+| Fondamentale (graves) | −0,03 dB | −0,01 dB | +0,02 dB | +0,03 dB |
+| Sons purs 7 / 9 / 12 kHz | ±0,08 dB | ±0,01 dB | ±0,01 dB | ±0,01 dB |
+
+L'écart RMS restant vient de l'estimation des bandes passantes (LPC sur un spectre harmonique : F4 estimé à 293 Hz
+pour 180) ; un ordre LPC plus élevé s'accroche aux harmoniques (8 dB d'écart à l'ordre 18).
+
+### Doubler
+
+- Deux têtes à raccords glottiques (`SpliceShifter`) sur la somme mono du Wet : gauche −7 c, droite +7 c, retards
+  moyens ≈ 9 et 14 ms (la tête garde son retard dans [D, D + 1,25 T] : D = 7,5 / 12,5 ms).
+- Au-delà de 96 kHz, les doublures tournent à ≤ 96 kHz (÷2^k, raccords, ×2^k, retard de la chaîne mesuré et retiré) :
+  les voix doublées n'ont pas besoin de l'air du DXD. Coût à 384 kHz : ~6 % -> ~3 % d'un cœur.
+- Mélange : Wet ± 0,707·d·doublure, niveau global conservé (1/√(1 + g²), voix décorrélées). Stéréo seulement (moteur
+  lié) ; 0 % : rien n'est calculé.
+
+### Éditeur
+
+- `KnobSlider` : glissé de 220 px pour toute la course ; Maj, Cmd (macOS) ou Ctrl (Windows / Linux) divisent la
+  sensibilité par 5. Le calcul est incrémental, on peut donc changer de modificateur en cours de geste sans saut.
+  Double-clic (ou Alt-clic) : valeur par défaut. Clic sur la valeur ou clic droit : saisie au clavier (« 3.5 »,
+  « -2.5 »).
+- **FREEZE** dans l'en-tête du graphe : l'affichage se fige, la FIFO continue d'être vidée (aucun débordement).
+- Panneau gamme : **AUTO-KEY** et **MIDI** (paramètre `midi_target`, automatisable). Rangée du bas : 10 boutons +
+  Preserve en quatre groupes séparés — correction (Retune, Flex, Humanize), timbre (Formant, Preserve, Throat),
+  hauteur (Transpose, Fine Tune, A4), sortie (Doubler, Mix).
+
+### Banc `aurapitch_step5a_test` (209 vérifications)
+
+| Mesure | Résultat |
+|---|---|
+| Auto-Key, mélodie en Si mineur (Bandit) et en Do majeur, voix réaliste ±18 c, 48 et 384 kHz, Live et Studio | B Minor 99,8 % · C Major 99,9 % ; 3 notes (1,2 s) : 36 % |
+| MIDI : voix A3 + NoteOn C4, Pitch Bend +1, NoteOff, 48 / 96 / 384 kHz | C4 ±0,01 c (max 0,14) · D4 ±0,01 c · retour A3 ±0,01 c |
+| MIDI : accord C4-E4-G4, voix E4 +60 c | E4 −0,01 c |
+| Flex : glissando A3 -> C4 en 150 ms, hard-tune | Transition 0 : escalier (55 c d'écart) · 120 ms : la sortie suit la voix (10 c = justesse d'origine), puis C4 à 0,0 c |
+| Throat | voir le tableau ci-dessus |
+| Doubler 100 % | gauche −7,00 c, +9,5 ms · droite +7,00 c, +14,5 ms ; mono inchangé |
+| Throat 100 % / Doubler 0 % / Transition 0 / MIDI Off | identique au bit près ; retour au bit près après une excursion |
+| Temps réel, toutes les fonctions actives, automation à chaque bloc, Live <-> Studio | 0 allocation, 44,1 / 96 / 384 kHz |
+
+Charge CPU, stéréo, voix corrigée (même machine que l'étape 2), réglages neutres -> Throat 115 % + Doubler 60 % :
+
+| fs (kHz) | 48 | 96 | 192 | 384 |
+|---|---|---|---|---|
+| Live | 1,6 -> 3,0 % | 2,3 -> 5,0 % | 3,9 -> 7,8 % | 7,4 -> 13,9 % |
+| Studio/DXD | 4,9 -> 6,4 % | 5,9 -> 9,0 % | 6,4 -> 10,6 % | 8,5 -> 15,0 % |
+
+### Limites de l'étape 5A
+
+- **Throat en Mix < 100 % ou en bypass progressif** : quand Throat ≠ 100 %, toute la sortie (Wet et Dry) porte la
+  phase du passe-tout de croisement (module plat) ; pendant les 20 ms d'engagement ou de retrait, Wet direct et Wet
+  passe-tout se mélangent (léger creux autour de 4,6 kHz, le temps du fondu).
+- **Doubler en double mono** : le doubleur travaille sur le moteur lié (stéréo). En Dual Mono, chaque moteur est mono
+  et le doubleur ne fait rien.
+- **Flex et vibrato** : un vibrato rapide dépasse le seuil de 6 dt/s ; avec Flex > 0 il passe en partie (c'est
+  l'intention : l'expression passe). Pour un vibrato aplati, Flex à 0.
+- **Auto-Key** : majeur / mineur naturel seulement (pas de modes) ; la confiance suppose ≈ 4 notes par seconde.
+- **AU** : le changement de type (`aufx` -> `aumf`) oblige à réinsérer l'AU dans une session Logic existante.

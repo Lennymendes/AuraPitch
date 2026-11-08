@@ -50,7 +50,7 @@ jobs:
           cp -R "build/AuraPitch_artefacts/$BUILD_TYPE/AU/AuraPitch.component" ~/Library/Audio/Plug-Ins/Components/
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           sleep 2
-          auval -v aufx Aupt Nxds
+          auval -v aumf Aupt Nxds          # Music Effect : effet audio avec entrée MIDI
 
       - name: Package
         run: |

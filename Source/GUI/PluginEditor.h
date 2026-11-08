@@ -23,10 +23,21 @@ public:
     /** Pour le banc d'essai : une image de l'interface (vide la FIFO et avance l'animation d'un pas). */
     void pullFramesForTest (double dtSeconds) { update (dtSeconds); }
 
+    /** Pour le banc d'essai : accès aux commandes. */
+    juce::TextButton& getAutoKeyButton() noexcept { return autoKeyButton; }
+    juce::TextButton& getMidiButton() noexcept    { return midiButton; }
+    nextdsp::PitchGraph& getGraph() noexcept      { return graph; }
+    nextdsp::Knob& getKnob (const juce::String& paramId);
+
+    /** Auto-Key : clic sur le bouton (démarre l'écoute, ou l'arrête et applique le meilleur résultat). */
+    void autoKeyClicked();
+
 private:
     void timerCallback() override;
     void update (double dtSeconds);
     void refreshStatus();
+    void updateAutoKey (double dt);
+    void finishAutoKey (bool apply);
 
     AuraPitchProcessor& pitchProcessor;
     nextdsp::LookAndFeel lnf;
@@ -40,7 +51,12 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> keyAttachment, scaleAttachment;
 
     nextdsp::SegmentedControl inputType, trackingMode, channelMode;
-    nextdsp::Knob retune, humanize, formant, transpose, fine, a4, mix;
+    nextdsp::Knob retune, humanize, formant, transpose, fine, a4, mix, flex, throat, doubler;
+    juce::TextButton autoKeyButton { "AUTO-KEY" }, midiButton { "MIDI" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> midiAttachment;
+    enum class KeyState { Idle, Listening, Showing };
+    KeyState keyState = KeyState::Idle;
+    double keyTimer = 0.0;
     juce::ToggleButton preserve { "PRESERVE" };
     juce::TextButton bypass { "BYPASS" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> preserveAttachment, bypassAttachment;

@@ -23,6 +23,11 @@ namespace aura::params
     inline constexpr const char* mix             = "mix";
     inline constexpr const char* channelMode     = "channel_mode";
     inline constexpr const char* bypass          = "bypass";
+    // étape 5A
+    inline constexpr const char* transition      = "transition";
+    inline constexpr const char* throat          = "throat";
+    inline constexpr const char* doubler         = "doubler";
+    inline constexpr const char* midiTarget      = "midi_target";
 
     juce::String noteId (int pitchClass);               // "note_0" … "note_11"
 
@@ -65,6 +70,10 @@ namespace aura::params
         std::atomic<float>* mixV = nullptr;
         std::atomic<float>* channelV = nullptr;
         std::atomic<float>* bypassV = nullptr;
+        std::atomic<float>* transitionV = nullptr;
+        std::atomic<float>* throatV = nullptr;
+        std::atomic<float>* doublerV = nullptr;
+        std::atomic<float>* midiV = nullptr;
         std::array<std::atomic<float>*, 12> notesV {};
     };
 

@@ -7,7 +7,9 @@
 //     (un moteur et un détecteur par canal) ;
 //   * bypass sans clic : Mix lissé vers 0 sur 20 ms, Dry retardé de la latence (la PDC de l'hôte reste juste) ;
 //   * latence : annoncée dans prepareToPlay(), puis tenue à jour par un timer du message thread (changement de
-//     TrackingMode) avec setLatencySamples() + updateHostDisplay (latencyChanged).
+//     TrackingMode) avec setLatencySamples() + updateHostDisplay (latencyChanged) ;
+//   * MIDI (étape 5A) : NoteOn / NoteOff / Pitch Bend / All Notes Off de tous les canaux, horodatés à l'échantillon,
+//     transmis aux moteurs pour le mode MIDI Target ; Auto-Key piloté depuis l'interface.
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -36,7 +38,7 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return JucePlugin_Name; }
-    bool acceptsMidi() const override  { return false; }
+    bool acceptsMidi() const override  { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
@@ -76,6 +78,18 @@ public:
         return shown.getPitchFifo().drain (std::forward<Fn> (fn));
     }
 
+    //--- étape 5A -------------------------------------------------------------------------------------------------
+    /** Auto-Key (message thread) : écoute de la voix, puis lecture du résultat du moteur affiché. */
+    void startKeyDetection();
+    void stopKeyDetection();
+    bool isKeyDetectionListening() const noexcept;
+    aura::pitch::AutoKeyDetector::Result getKeyDetection() const noexcept;
+    /** Applique Key + Scale (Major / Minor) aux paramètres, avec notification de l'hôte (undo / automation). */
+    void applyKey (int key, bool minor);
+
+    /** Notes MIDI tenues (bit n = note n), pour l'interface. */
+    std::array<std::uint64_t, 2> getHeldMidiNotes() const noexcept;
+
     /** Latence (échantillons) d'un mode, à la fréquence préparée. */
     int latencyFor (aura::pitch::TrackingMode mode) const noexcept;
 
@@ -83,7 +97,8 @@ public:
     void syncLatency();
 
 private:
-    template <typename T> void processTemplated (juce::AudioBuffer<T>& buffer, bool forceBypass) noexcept;
+    template <typename T> void processTemplated (juce::AudioBuffer<T>& buffer, juce::MidiBuffer& midi, bool forceBypass) noexcept;
+    const aura::pitch::AuraPitchEngine& shownEngine() const noexcept;
     void timerCallback() override;
 
     juce::AudioProcessorValueTreeState state;

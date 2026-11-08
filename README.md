@@ -14,6 +14,16 @@ traitement 64 bits. C++20 · JUCE 8.0.15.
 - Détection MPM 50–1200 Hz à coût constant quelle que soit la fréquence, voisement anti-sifflantes.
 - Gammes, clavier 12 notes (Active / Bypass / Removed), Retune 0–400 ms, Humanize, Transpose ±24, Fine ±100 c,
   A4 415–466 Hz, Formant ±12, Mix aligné à l'échantillon, stéréo liée ou double mono, bypass sans clic.
+- **Expressif (étape 5A)** :
+  - **Flex** (Transition 0–200 ms) : glissandos et slides d'attaque passent tels quels, puis la note se verrouille ;
+  - **Throat** 80–120 % : F1–F3 déplacés comme par un conduit vocal plus long ou plus court, aigus intacts ;
+  - **Doubler** 0–100 % : deux voix à +9 ms / −7 c et +14 ms / +7 c (stéréo) ;
+  - **AUTO-KEY** : détection de la tonalité (Temperley, bayésien) et application en un clic ;
+  - **MIDI Target** : la voix va à la note MIDI jouée (la plus proche dans un accord), Pitch Bend ±2 dt.
+- Ergonomie : glissé fin ÷5 (Maj ou Cmd/Ctrl), double-clic = valeur par défaut, clic sur la valeur ou clic droit =
+  saisie au clavier, **FREEZE** du graphe, notes MIDI éclairées sur le clavier et la grille.
+
+![AuraPitch, MIDI Target et Auto-Key](docs/screenshot-5a.png)
 
 ## Compiler
 
@@ -31,7 +41,11 @@ ctest --test-dir build -C Release --output-on-failure
 
 Options : `-DJUCE_DIR=/chemin/JUCE` (JUCE local), `-DAURAPITCH_COPY_PLUGIN=ON` (copie dans
 `~/Library/Audio/Plug-Ins/VST3` et `Components` après compilation), `-DAURAPITCH_BUILD_PLUGIN=OFF` (noyau DSP et
-bancs seuls, sans JUCE). La cible `AuraPitchTests` construit les quatre bancs.
+bancs seuls, sans JUCE). La cible `AuraPitchTests` construit les cinq bancs.
+
+**AU** : depuis l'étape 5A, l'AU est un *Music Effect* (`aumf`, effet audio avec entrée MIDI) pour recevoir les
+notes du mode MIDI Target ; dans Logic, il s'insère comme effet et la piste MIDI se route vers lui (*side chain*
+MIDI). Une session qui contenait l'AU de type `aufx` des étapes précédentes doit le réinsérer.
 
 **macOS, première ouverture** : le plug-in n'est pas signé par un compte développeur Apple (signature ad hoc). Si
 le DAW le refuse : `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/AuraPitch.component`
@@ -47,7 +61,8 @@ avec `auval` et publie les archives ; une étiquette `v*` crée une release GitH
 | `aurapitch_dsp_test` | détecteur, gamme, courbe de correction, FIFO | 247 / 247 |
 | `aurapitch_engine_test` | FFT, enveloppe, PSOLA, raccords, Studio/DXD, moteur, temps réel | 134 / 134 |
 | `aurapitch_realvoice_test` | voix réaliste : interpolation, voix fantôme, voile, flow rapide, stéréo | 32 / 32 |
-| `aurapitch_plugin_test` | processeur JUCE : paramètres, presets, latence, 32/64 bits, double mono, bypass, état, éditeur | 55 / 55 |
+| `aurapitch_step5a_test` | Auto-Key, MIDI Target, Flex, Throat, Doubler, transparence au bit près, CPU, temps réel | 209 / 209 |
+| `aurapitch_plugin_test` | processeur JUCE : paramètres, presets, latence, 32/64 bits, double mono, bypass, état, éditeur, MIDI de l'hôte, ergonomie 5A | 73 / 73 |
 
 Architecture détaillée et mesures : [ARCHITECTURE.md](ARCHITECTURE.md).
 

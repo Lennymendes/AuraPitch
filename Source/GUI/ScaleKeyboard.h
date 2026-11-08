@@ -25,6 +25,9 @@ public:
     /** Appelé par le timer de l'éditeur : redessine si la gamme a changé (automation, preset, hôte). */
     void refresh();
 
+    /** Classes de hauteur des notes MIDI tenues (mode MIDI Target) : touches éclairées en ambre. */
+    void setMidiPitchClasses (std::uint16_t mask) { if (mask != midiMask) { midiMask = mask; repaint(); } }
+
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
@@ -38,5 +41,6 @@ private:
     juce::AudioProcessorValueTreeState& state;
     std::array<int, 12> lastShown {};
     int lastTonic = -1, hovered = -1;
+    std::uint16_t midiMask = 0;
 };
 }

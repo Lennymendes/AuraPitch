@@ -84,9 +84,9 @@ if (AURAPITCH_BUILD_PLUGIN)
         PLUGIN_CODE                 Aupt
         FORMATS                     ${AURAPITCH_FORMATS}
         VST3_CATEGORIES             Fx Pitch Shift
-        AU_MAIN_TYPE                kAudioUnitType_Effect
+        AU_MAIN_TYPE                kAudioUnitType_MusicEffect      # effet audio + entrée MIDI (MIDI Target)
         IS_SYNTH                    FALSE
-        NEEDS_MIDI_INPUT            FALSE
+        NEEDS_MIDI_INPUT            TRUE
         NEEDS_MIDI_OUTPUT           FALSE
         IS_MIDI_EFFECT              FALSE
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
@@ -129,7 +129,7 @@ if (AURAPITCH_BUILD_TESTS)
     add_custom_target (AuraPitchTests)
 
     # Étape 1 : détecteur, gamme, FIFO · Étape 2 : PSOLA, vocodeur Studio/DXD, formants, moteur complet
-    foreach (bench aurapitch_dsp_test:PitchDspSelfTest aurapitch_engine_test:Step2SelfTest aurapitch_realvoice_test:RealVoiceSelfTest)
+    foreach (bench aurapitch_dsp_test:PitchDspSelfTest aurapitch_engine_test:Step2SelfTest aurapitch_realvoice_test:RealVoiceSelfTest aurapitch_step5a_test:Step5ASelfTest)
         string (REPLACE ":" ";" parts ${bench})
         list (GET parts 0 target)
         list (GET parts 1 source)
