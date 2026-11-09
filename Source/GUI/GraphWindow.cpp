@@ -70,14 +70,19 @@ GraphWindow::GraphWindow (GraphEditor& editor, juce::LookAndFeel& lnf, Rectangle
     setResizeLimits (640, 400, 16384, 16384);
     setWantsKeyboardFocus (true);
 
+    const auto& displays = Desktop::getInstance().getDisplays();
     if (bounds.isEmpty())
     {
-        const auto& displays = Desktop::getInstance().getDisplays();
         const auto* d = near != nullptr && near->isShowing() ? displays.getDisplayForRect (near->getScreenBounds())
                                                              : displays.getPrimaryDisplay();
         const auto area = d != nullptr ? d->userBounds.toNearestInt() : Rectangle<int> (0, 0, kDefaultWidth + 80, kDefaultHeight + 80);
         bounds = area.withSizeKeepingCentre (jmin (kDefaultWidth, area.getWidth() - 40),
                                              jmin (kDefaultHeight, area.getHeight() - 40));
+    }
+    else if (const auto* d = displays.getDisplayForRect (bounds))
+    {
+        // position mémorisée : ramenée dans l'écran (écran débranché, résolution réduite), comme le fait macOS
+        bounds = bounds.constrainedWithin (d->userBounds.toNearestInt());
     }
     setBounds (bounds);
 #if JUCE_MAC

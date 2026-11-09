@@ -734,7 +734,7 @@ static void testExpandedView()
     }
 
     // fermeture par le bouton de la fenêtre (rappel asynchrone), puis retour dans l'éditeur
-    const auto bigBounds = win->getBounds();
+    const auto bigBoundsRaw = win->getBounds();
     win->closeButtonPressed();
 #if JUCE_LINUX || JUCE_WINDOWS
     pumpMessages();
@@ -749,8 +749,10 @@ static void testExpandedView()
     // le bouton de l'en-tête rouvre à la dernière position, puis le referme ; fermer l'éditeur avec la fenêtre ouverte
     ge.expandButton.onClick();
     {
-        // l'OS peut recaler une fenêtre (barre de menus macOS, bord de l'écran) : ±40 px
+        // l'OS ramène la fenêtre dans l'écran (macOS : barre de menus, écran de 1024 px des VM) : on compare à la position
+        // mémorisée ramenée dans l'écran, à ±40 px
         const auto b2 = editor->getGraphWindow() != nullptr ? editor->getGraphWindow()->getBounds() : juce::Rectangle<int>();
+        const auto bigBounds = bigBoundsRaw.constrainedWithin (screen);
         std::printf ("  réouverture : %d,%d %d × %d (fermée à %d,%d %d × %d)\n", b2.getX(), b2.getY(), b2.getWidth(), b2.getHeight(),
                      bigBounds.getX(), bigBounds.getY(), bigBounds.getWidth(), bigBounds.getHeight());
         check (! b2.isEmpty() && std::abs (b2.getX() - bigBounds.getX()) <= 40 && std::abs (b2.getY() - bigBounds.getY()) <= 40
