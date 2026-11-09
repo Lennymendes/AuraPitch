@@ -714,7 +714,7 @@ bloc audio (float / double, 1 ou 2 canaux) ── sortie = entrée, au bit près
 | Test | Mesure |
 |---|---|
 | [1] décimateur | 44,1 / 48 / 96 / 192 / 352,8 / 384 kHz : bande utile ±0,002 dB, repliement −89,7 à −91,7 dB |
-| [2] live, 30 s, mémoire ∞ | D, B mineur (384 kHz), F mineur, E, Ab (sans batterie), C désaccordé +35 c, G mineur −40 c (88,2 kHz) : bonne clé, confiance ≥ 99,6 %, accroche en 4,6 à 6,5 s, accord estimé à ±0,5 c |
+| [2] live, 30 s, mémoire ∞ | D, B mineur (384 kHz), F mineur, E, Ab (sans batterie), C désaccordé +35 c, G mineur −40 c (88,2 kHz) : bonne clé, confiance ≥ 99,6 %, accroche en 4,6 à 6,5 s, accord estimé à ±0,5 c ; Am F C G : C majeur (relative, acceptée : voir limites) |
 | [3] mémoire | 8 s : F mineur 14,8 s après une modulation D majeur -> F mineur ; ∞ : garde l'historique ; RESET vide l'historique |
 | [4] temps réel | 48 et 384 kHz, blocs irréguliers 64 … 544 : 0 allocation, CPU 0,10 % / 0,59 % d'un cœur, 168 k / 897 k lectures concurrentes de l'état, 0 incohérente |
 | [5] hors ligne | D 128 BPM, B mineur 96 BPM (DXD), Eb 140 BPM, C# mineur 75 BPM −25 c : bonne clé, tempo à ±0,14 BPM, accord ±0,6 c, une section ; D -> F mineur -> A : trois sections, limites exactes (36 s, 72 s) ; silence : ni clé ni tempo |
@@ -727,7 +727,8 @@ bloc audio (float / double, 1 ou 2 canaux) ── sortie = entrée, au bit près
   musique réelle (mixages denses, voix, distorsion, basses désaccordées), les détecteurs de clé à profils se trompent
   surtout entre **relatives** (Am / C) et entre **quintes voisines** ; c'est visible ici sur la progression Am F C G,
   détectée C majeur (ce sont exactement les accords de C majeur : seul l'ordre la dit mineure, et un histogramme ne
-  voit pas l'ordre). Le cercle montre alors les deux cases allumées.
+  voit pas l'ordre), et avec **99 % de confiance** (A mineur : 0,7 %) : la confiance mesure l'accord avec les
+  profils, pas l'ambiguïté musicale.
 - **Tempo** : un seul tempo global (pas de carte de tempo) ; les ambiguïtés d'octave (87 / 174 BPM en drum'n'bass,
   ternaire) sont départagées par l'a priori à 120 BPM, pas résolues.
 - La confiance live dépend de `kChromaEvidenceRate` (1,5), calibré sur ces morceaux de synthèse : elle monte vite
