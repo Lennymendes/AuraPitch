@@ -12,6 +12,9 @@
 //   * poignée gauche, glisser horizontalement : glissé d'attaque depuis la note précédente (0 … 100 %) ;
 //   * molette : défilement vertical ; Maj + molette ou molette horizontale : défilement dans le temps ;
 //     Cmd / Ctrl + molette : zoom temps ; Cmd / Ctrl + Alt + molette : zoom hauteur ; boutons − / + ; FOLLOW.
+//
+// Étape 6 : bouton EXPAND (double flèche, en bout d'en-tête). Le même composant passe dans une grande fenêtre dédiée
+// (GraphWindow) puis revient dans l'éditeur ; il garde sa vue, sa sélection et son zoom.
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -21,6 +24,19 @@
 
 namespace nextdsp
 {
+/** Bouton icône : deux flèches vers l'extérieur (agrandir) ou vers l'intérieur (réduire). */
+class ExpandButton final : public juce::Button
+{
+public:
+    ExpandButton() : juce::Button ("EXPAND") {}
+    void setCollapseIcon (bool c) { collapse = c; repaint(); }
+    bool showsCollapseIcon() const noexcept { return collapse; }
+    void paintButton (juce::Graphics&, bool highlighted, bool down) override;
+
+private:
+    bool collapse = false;
+};
+
 class GraphEditor final : public juce::Component
 {
 public:
@@ -53,6 +69,12 @@ public:
     double getSemitonesVisible() const noexcept { return semitones; }
     const std::vector<bool>& getSelection() const noexcept { return selected; }
 
+    /** Vue agrandie : le composant est dans la fenêtre dédiée (en-tête sans sélecteur MONITOR | GRAPH). */
+    void setDetached (bool d);
+    bool isDetached() const noexcept { return detached; }
+    std::function<void()> onExpandToggle;
+    ExpandButton expandButton;
+
     juce::TextButton captureButton { "CAPTURE" }, clearButton { "CLEAR" }, quantizeButton { "QUANTIZE ALL" },
                      followButton { "FOLLOW" }, zoomOut { "-" }, zoomIn { "+" };
 
@@ -82,5 +104,6 @@ private:
     int hoverNote = -1;
     Part hoverPart = Part::None;
     double lastPlayhead = 0.0;
+    bool detached = false;
 };
 }

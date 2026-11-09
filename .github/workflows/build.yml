@@ -1,8 +1,8 @@
-# AuraPitch — compilation et bancs d'essai à chaque push
-#   macOS  : VST3 + AU + Standalone, binaire universel arm64 / x86_64, validation auval
-#   Windows: VST3 + Standalone x64 (MSVC)
-#   Linux  : VST3 + Standalone (contrôle de portabilité)
-# Les trois exécutent ctest (bancs DSP étapes 1-2 + banc du processeur JUCE). Une étiquette v* publie une release.
+# AuraSuite (AuraPitch + AuraKey) — compilation et bancs d'essai à chaque push. VST3 uniquement.
+#   macOS  : binaire universel arm64 / x86_64
+#   Windows: x64 (MSVC)
+#   Linux  : contrôle de portabilité
+# Les trois exécutent ctest. Une étiquette v* publie une release.
 name: build
 
 on:
@@ -43,28 +43,18 @@ jobs:
       - name: Check universal binaries
         run: |
           lipo -info "build/AuraPitch_artefacts/$BUILD_TYPE/VST3/AuraPitch.vst3/Contents/MacOS/AuraPitch"
-          lipo -info "build/AuraPitch_artefacts/$BUILD_TYPE/AU/AuraPitch.component/Contents/MacOS/AuraPitch"
-
-      - name: Validate Audio Unit (auval)
-        continue-on-error: true
-        run: |
-          mkdir -p ~/Library/Audio/Plug-Ins/Components
-          cp -R "build/AuraPitch_artefacts/$BUILD_TYPE/AU/AuraPitch.component" ~/Library/Audio/Plug-Ins/Components/
-          killall -9 AudioComponentRegistrar 2>/dev/null || true
-          sleep 2
-          auval -v aumf Aupt Nxds          # Music Effect : effet audio avec entrée MIDI
+          lipo -info "build/AuraKey_artefacts/$BUILD_TYPE/VST3/AuraKey.vst3/Contents/MacOS/AuraKey"
 
       - name: Package
         run: |
           mkdir -p dist
-          cd "build/AuraPitch_artefacts/$BUILD_TYPE"
-          ditto -c -k --keepParent VST3/AuraPitch.vst3 "$GITHUB_WORKSPACE/dist/AuraPitch-macOS-VST3.zip"
-          ditto -c -k --keepParent AU/AuraPitch.component "$GITHUB_WORKSPACE/dist/AuraPitch-macOS-AU.zip"
-          ditto -c -k --keepParent Standalone/AuraPitch.app "$GITHUB_WORKSPACE/dist/AuraPitch-macOS-Standalone.zip"
+          for p in AuraPitch AuraKey; do
+            (cd "build/${p}_artefacts/$BUILD_TYPE" && ditto -c -k --keepParent VST3/$p.vst3 "$GITHUB_WORKSPACE/dist/$p-macOS-VST3.zip")
+          done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AuraPitch-macOS
+          name: AuraSuite-macOS
           path: dist/*.zip
 
   windows:
@@ -92,13 +82,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          $art = "build/AuraPitch_artefacts/${{ env.BUILD_TYPE }}"
-          Compress-Archive -Path "$art/VST3/AuraPitch.vst3" -DestinationPath dist/AuraPitch-Windows-VST3.zip
-          Compress-Archive -Path "$art/Standalone/AuraPitch.exe" -DestinationPath dist/AuraPitch-Windows-Standalone.zip
+          foreach ($p in "AuraPitch", "AuraKey") {
+            Compress-Archive -Path "build/${p}_artefacts/${{ env.BUILD_TYPE }}/VST3/$p.vst3" -DestinationPath "dist/$p-Windows-VST3.zip"
+          }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AuraPitch-Windows
+          name: AuraSuite-Windows
           path: dist/*.zip
 
   linux:

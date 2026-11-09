@@ -1,6 +1,7 @@
-# AuraPitch 1.0 — NextDSP · architecture (étapes 1 à 5B)
+# AuraSuite — AuraPitch 1.0 + AuraKey 1.0 — NextDSP · architecture (étapes 1 à 6)
 
-Correction de hauteur et Pitch & Formant Shifter, VST3 / AU / Standalone, C++20 · JUCE 8.0.15 (même version
+AuraPitch : correction de hauteur et Pitch & Formant Shifter. AuraKey (étape 6) : analyseur de tonalité, tempo et
+sections. **VST3 uniquement** depuis l'étape 6 (plus d'Audio Unit ni de Standalone). C++20 · JUCE 8.0.15 (même version
 qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 352,8 / 384 kHz, entrée/sortie
 `float` ou `double` selon l'hôte.
 
@@ -26,6 +27,10 @@ qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 3
   `aurapitch_step5b_test` **66 / 66** (48 sans JUCE ; ASan + UBSan + LeakSanitizer et ThreadSanitizer muets). Sans
   notes, ou transport arrêté : sortie identique au bit près à celle de l'étape 4. Validation locale (Linux, GCC 13,
   JUCE 8.0.15, sans avertissement) ; la CI GitHub reste arrêtée par le quota de minutes du compte.
+- Étape 6 : VST3 seul (CMake et CI) ; GRAPH EDITOR en fenêtre agrandie (`GraphWindow`) ; nouveau plug-in **AuraKey**.
+  Banc `aurapitch_step5b_test` **83 / 83** (17 vérifications de la vue agrandie) ; banc `aurakey_test` **159 / 159**
+  avec JUCE, 72 / 72 sans JUCE. Les sept bancs passent (`ctest` sous Xvfb, GCC 13, JUCE 8.0.15, aucun avertissement
+  dans le code de la suite) ; ASan + UBSan et TSan muets sur les noyaux DSP. CI GitHub arrêtée par le quota macOS.
 - Les bancs DSP passent avec GCC 13 et Clang 18 ; AddressSanitizer + UBSan et ThreadSanitizer ne signalent rien
   (seul le budget CPU échoue sous sanitizer, ce qui est attendu). Les en-têtes compilent sans aucun avertissement
   (`-Wall -Wextra -Wshadow -Wconversion -Wpedantic`).
@@ -33,8 +38,8 @@ qu'AuraEngine, AuraDAW et AuraRack). Traitement en `double` de 44,1 kHz au DXD 3
 ## Arborescence
 
 ```
-AuraPitch/
-├── CMakeLists.txt                     JUCE 8.0.15 (FetchContent ou JUCE_DIR) ; noyau DSP sans JUCE ; cible AuraPitchTests
+AuraPitch/                             (dépôt AuraSuite)
+├── CMakeLists.txt                     JUCE 8.0.15 (FetchContent ou JUCE_DIR) ; AuraPitch VST3 ; include d'AuraKey ; AuraPitchTests
 ├── Source/
 │   ├── DSP/                           en-têtes C++20 sans JUCE, testables seuls
 │   │   ├── AuraPitchEngine.h          ✅ chef d'orchestre : détection -> gamme -> courbe -> Live / Studio -> Mix -> FIFO
@@ -58,6 +63,7 @@ AuraPitch/
 │       ├── Controls.h/.cpp            ✅ Knob, SegmentedControl (paramètres Choice / Bool)
 │       ├── PitchDisplay.h/.cpp        ✅ PitchGraph (historique défilant), TunerArc (accordeur ±50 c)
 │       ├── GraphEditor.h/.cpp         ✅ étape 5B : GRAPH EDITOR (piano-roll calé sur la timeline, édition à la souris)
+│       ├── GraphWindow.h/.cpp         ✅ étape 6 : fenêtre agrandie du GRAPH EDITOR + panneau de renvoi
 │       └── ScaleKeyboard.h/.cpp       ✅ clavier 12 notes Active / Bypass / Removed
 ├── Tests/
 │   ├── PitchDspSelfTest.cpp           ✅ banc étape 1
@@ -71,7 +77,22 @@ AuraPitch/
 ├── docs/screenshot.png                capture rendue par le banc (384 kHz, Studio DXD, 64 bits)
 ├── docs/screenshot-5a.png             MIDI Target (notes tenues éclairées), AUTO-KEY appliqué, Throat / Doubler / Flex
 ├── docs/screenshot-graph.png          GRAPH EDITOR : phrase capturée, note éditée (D4, vibrato 0), glissé, scission
-├── .github/workflows/build.yml        CI : macOS universel + auval, Windows x64, Linux, release sur v*
+├── docs/screenshot-graph-window.png   étape 6 : GRAPH EDITOR dans sa fenêtre 1200 × 800
+├── docs/screenshot-aurakey.png        étape 6 : AuraKey (clé live, cercle des quintes, fichier analysé, sections)
+├── AuraKey/
+│   ├── AuraKey.cmake                  cible VST3 AuraKey, noyau aurakey_dsp, banc aurakey_test (inclus par la racine)
+│   ├── Source/
+│   │   ├── DSP/                       en-têtes C++20 sans JUCE
+│   │   │   ├── Decimator.h            RIF sinc-Blackman, flux -> ≈ 11 kHz (÷4 à 44,1/48 k … ÷35 à 384 k)
+│   │   │   ├── ChromaAnalyzer.h       pics spectraux (FFT 8192) -> chroma 36 cases + accord (moyenne circulaire)
+│   │   │   ├── LiveKeyAnalyzer.h      thread audio : chroma -> AutoKeyDetector (5A), mémoire, seqlock vers l'interface
+│   │   │   ├── TempoEstimator.h       flux spectral, autocorrélation, peigne 4 temps + a priori 120 BPM
+│   │   │   ├── OfflineKeyAnalyzer.h   fichier complet : clé, tempo, accord, sections (Viterbi)
+│   │   │   └── KeyTypes.h             noms, Camelot, cercle des quintes, résultats
+│   │   ├── PluginProcessor.h/.cpp     AuraKeyProcessor : passe-tout au bit près, analyse live, fil d'import, état
+│   │   └── GUI/                       AuraKeyEditor (+ FilePanelView), CircleOfFifths, SectionMap
+│   └── Tests/                         AuraKeyTests.cpp, PluginTests.inc (avec JUCE), SyntheticMusic.h
+├── .github/workflows/build.yml        CI : macOS universel, Windows x64, Linux (VST3 des deux plug-ins), release sur v*
 └── .gitignore
 ```
 
@@ -614,3 +635,103 @@ thread : un hôte qui appelle `getStateInformation()` depuis un autre thread ne 
 - **Undo** : les éditions du GRAPH ne passent pas par l'undo de l'hôte.
 - **Dual Mono** : la capture vient du canal gauche ; les mêmes notes s'appliquent aux deux moteurs.
 - **AU / VST3 non testés dans un DAW réel** (Logic, Cubase, Reaper) : l'AudioPlayHead est simulé au banc.
+
+
+## Étape 6 — VST3 seul, GRAPH EDITOR agrandi, AuraKey
+
+### VST3 uniquement
+- `FORMATS VST3` pour AuraPitch et AuraKey ; `AU_MAIN_TYPE` et la liste de formats conditionnelle sont supprimés. Plus
+  aucun `.component` ni `.app` n'est généré (vérifié : l'arborescence de build ne contient que les deux `.vst3`).
+- CI : plus d'`auval` ni d'archive AU / Standalone ; `lipo -info` et archives pour les deux `.vst3`.
+
+### GRAPH EDITOR agrandi (`GraphWindow`)
+- Bouton à double flèche au bout de l'en-tête du GRAPH EDITOR (`ExpandButton`, icône « réduire » quand la fenêtre est
+  ouverte). Le **même** composant `GraphEditor` est reparenté dans une `DocumentWindow` native (1200 × 800 centrée
+  sur l'écran du plug-in, redimensionnable, limites 640 × 400, boutons réduire / agrandir / fermer de l'OS) : vue,
+  sélection, zoom et glissés en cours sont conservés ; aucune copie du modèle.
+- Dans l'éditeur, un panneau de renvoi remplace la vue (SHOW WINDOW, RETURN HERE). Le sélecteur MONITOR | GRAPH reste
+  utilisable ; le GRAPH EDITOR continue d'être rafraîchi (`tick`) tant que la fenêtre est ouverte.
+- Fermeture (bouton de la fenêtre, Échap, bouton réduire) : la fenêtre est détruite hors de son propre rappel
+  (`MessageManager::callAsync` + `SafePointer`), le composant revient dans l'éditeur à sa place. La position de la
+  fenêtre est mémorisée par le processeur (pas dans l'état du projet). Fermer le plug-in avec la fenêtre ouverte
+  détruit la fenêtre avant le composant et le LookAndFeel.
+- macOS : la fenêtre est « toujours devant » pour ne pas passer derrière la fenêtre (souvent flottante) du plug-in.
+- Interface seulement : rien de nouveau n'est partagé avec le thread audio (les éditions passent toujours par
+  `graphEdited` -> `GraphExchange`, sans verrou).
+- Banc `aurapitch_step5b_test`, test **[9] expand** (17 vérifications, sous Xvfb) : ouverture 1200 × 800 sur le
+  bureau, composant reparenté (même objet), espace ×2,0 en largeur et ×3,6 en hauteur de rangée, vue conservée,
+  glisser + scinder dans la fenêtre, redimensionnement suivi, fermeture par le bouton de la fenêtre (rappel
+  asynchrone), retour à la place exacte, éditions conservées et rejouées (note 3 à −0,14 c de la cible), réouverture
+  à la dernière position, fermeture de l'éditeur avec la fenêtre ouverte.
+
+### AuraKey — chaîne d'analyse
+```
+bloc audio (float / double, 1 ou 2 canaux) ── sortie = entrée, au bit près
+   └─ mixage mono (double) -> Decimator (≈ 11 kHz) -> ChromaAnalyzer (FFT 8192, pas 2048 ≈ 0,19 s)
+         └─ pics 75 Hz … 2 kHz -> chroma 36 cases + écarts d'accord -> repli 12 classes (accord estimé)
+               └─ AutoKeyDetector (étape 5A : Temperley, bayésien) -> clé, confiance, 24 probabilités
+```
+- **Decimator** : facteur entier round(fs / 11025), RIF sinc fenêtré Blackman à 16·D + 1 coefficients, coupure
+  0,42 × fa ; bande utile plate à ±0,002 dB jusqu'à 2 kHz, repliement −90 dB à toutes les fréquences (44,1 … 384 kHz).
+- **ChromaAnalyzer** : maximum local au-dessus de −60 dB du maximum et de 1,6 × la moyenne locale ; fréquence et
+  amplitude par interpolation parabolique du log-module ; poids √amplitude ; répartition linéaire entre cases voisines
+  (comme l'Auto-Key de 5A pour une voix fausse). Accord = moyenne circulaire des écarts au demi-ton (ignorée si la
+  résultante est < 0,25). Poids de trame = durée × niveau (−60 dBFS -> 0, −20 dBFS -> 1).
+- **AutoKeyDetector** (partagé) : nouvelles méthodes `addPitchClassWeights`, `setEvidenceRate` (1,5 « notes » par
+  seconde pour un chroma polyphonique, contre 4 pour une voix), `decay`, `posteriors`. Les valeurs par défaut gardent
+  le comportement de l'étape 5A (banc 5A inchangé, 209 / 209).
+- **Live** (`LiveKeyAnalyzer`) : mémoire τ = 8 s, 30 s (défaut) ou ∞ par atténuation e^{−dt/τ} à chaque trame avec du
+  contenu (les silences ne font pas oublier) ; accord sur 60 s glissantes ; RESET par drapeau atomique. L'état publié
+  (≈ 330 octets) passe à l'interface par un **seqlock** à mots atomiques : l'audio n'attend jamais, l'interface relit
+  si une écriture l'a croisée.
+- **Fichier** (`OfflineKeyAnalyzer`, fil `AnalysisJob` de priorité basse) : lecture par blocs de 64 k échantillons
+  (`AudioFormatReader`, pas de fichier entier en mémoire : seules les trames de chroma — 36 flottants / 0,19 s — et
+  l'enveloppe d'attaques sont conservées), puis :
+  - accord du morceau et clé globale sur tout le chroma ;
+  - **tempo** : flux spectral positif (FFT 512, pas 64 ≈ 172 trames/s), moyenne locale retirée, lissage gaussien,
+    autocorrélation jusqu'à 4 s, peigne sur 4 multiples de la période pondéré par un a priori log-normal centré sur
+    120 BPM (σ = 1 octave), affinage au millième de BPM ;
+  - **sections** : a posteriori des 24 clés sur une fenêtre de 7 s, une valeur par seconde, Viterbi (changer de clé
+    coûte 18 nats) ; sections de moins de 6 s rattachées à leur voisine.
+- Formats : `registerBasicFormats` (WAV, AIFF, FLAC, Ogg ; Core Audio sous macOS) + décodeur MP3 logiciel de JUCE
+  (`JUCE_USE_MP3AUDIOFORMAT`, option `AURAKEY_MP3_DECODER`, avertissement de licence de JUCE à lire).
+- Un nouveau fichier (ou CANCEL) annule l'analyse en cours au bloc suivant. Fichier illisible : message, résultat
+  précédent conservé. Le résultat (clé, tempo, accord, sections, chroma, 24 probabilités, caractéristiques du
+  fichier) est sauvegardé dans l'état du plug-in, pas le fichier.
+
+### AuraKey — interface
+- 1000 × 640 (840 × 560 … 1800 × 1200). LIVE KEY : clé « G Major », confiance « 98% », Camelot, relative, durée
+  écoutée, accord (et A de référence), niveau d'entrée, classes de hauteur (notes de la gamme en couleur) ; cercle
+  des quintes ; MEMORY (8 s · 30 s · ∞) et RESET. FILE ANALYSIS : zone de dépôt (survol en surbrillance), barre de
+  progression et CANCEL pendant l'analyse, puis clé « D Major (100%) », tempo, Camelot, relative, accord, classes de
+  hauteur, format / bits / fréquence (DXD) / canaux / durée / temps d'analyse. SECTIONS : bandes cyan (majeur) /
+  violet (mineur), règle mm:ss, survol détaillé, clic = clé épinglée sur le cercle.
+- Cercle des quintes : intensité = √(probabilité / max) × contraste (rien d'allumé tant que les 24 clés sont
+  équiprobables) ; clé live lumineuse, clé du fichier en ambre, clé épinglée en blanc ; centre : clé, Camelot,
+  probabilité live, notes de la gamme.
+
+### Banc `aurakey_test` (159 vérifications ; 72 sans JUCE)
+| Test | Mesure |
+|---|---|
+| [1] décimateur | 44,1 / 48 / 96 / 192 / 352,8 / 384 kHz : bande utile ±0,002 dB, repliement −89,7 à −91,7 dB |
+| [2] live, 30 s, mémoire ∞ | D, B mineur (384 kHz), F mineur, E, Ab (sans batterie), C désaccordé +35 c, G mineur −40 c (88,2 kHz) : bonne clé, confiance ≥ 99,6 %, accroche en 4,6 à 6,5 s, accord estimé à ±0,5 c |
+| [3] mémoire | 8 s : F mineur 14,8 s après une modulation D majeur -> F mineur ; ∞ : garde l'historique ; RESET vide l'historique |
+| [4] temps réel | 48 et 384 kHz, blocs irréguliers 64 … 544 : 0 allocation, CPU 0,10 % / 0,59 % d'un cœur, 168 k / 897 k lectures concurrentes de l'état, 0 incohérente |
+| [5] hors ligne | D 128 BPM, B mineur 96 BPM (DXD), Eb 140 BPM, C# mineur 75 BPM −25 c : bonne clé, tempo à ±0,14 BPM, accord ±0,6 c, une section ; D -> F mineur -> A : trois sections, limites exactes (36 s, 72 s) ; silence : ni clé ni tempo |
+| [6] processeur | 48 kHz 32 bits, 384 et 44,1 kHz 64 bits : sortie identique à l'entrée au bit près, 0 allocation, B mineur ≥ 99,1 % ; bus mono ; MEMORY dans l'état |
+| [7] fichiers | WAV 16 bits 44,1 k, WAV 32 bits flottants 384 k, WAV 24 bits 352,8 k, AIFF 24 bits 96 k, FLAC 24 bits 48 k (modulation G -> E mineur), FLAC 24 bits 384 k, MP3 192 kb/s (ffmpeg) : clé, tempo ±0,5 BPM, sections, fréquence et durée ; analyse de 0,11 à 0,38 s par fichier pendant que le thread audio tourne (23 k à 75 k blocs, 0 allocation, transparent) ; annulation d'un DXD de 2 min en 2 ms ; fichier illisible ; état restauré à l'identique |
+| [8] interface | survol refusé (.txt) / accepté (.flac), surbrillance, dépôt -> analyse (D / B mineur / D : 3 sections), 24 cases du cercle, survol, épingler / désépingler, clic sur une section -> B mineur épinglée, RESET, capture PNG |
+
+### Limites de l'étape 6
+- **Morceaux de synthèse seulement** : aucun enregistrement réel n'était disponible dans l'environnement. Sur de la
+  musique réelle (mixages denses, voix, distorsion, basses désaccordées), les détecteurs de clé à profils se trompent
+  surtout entre **relatives** (Am / C) et entre **quintes voisines** ; c'est visible ici sur la progression Am F C G,
+  détectée C majeur (ce sont exactement les accords de C majeur : seul l'ordre la dit mineure, et un histogramme ne
+  voit pas l'ordre). Le cercle montre alors les deux cases allumées.
+- **Tempo** : un seul tempo global (pas de carte de tempo) ; les ambiguïtés d'octave (87 / 174 BPM en drum'n'bass,
+  ternaire) sont départagées par l'a priori à 120 BPM, pas résolues.
+- La confiance live dépend de `kChromaEvidenceRate` (1,5), calibré sur ces morceaux de synthèse : elle monte vite
+  (> 99 % en 30 s) et devra peut-être être ralentie sur de vrais morceaux.
+- Fenêtre agrandie : testée sous Xvfb (Linux) seulement ; le comportement « toujours devant » sous macOS et la
+  cohabitation avec les fenêtres flottantes des DAW restent à vérifier dans Logic / Ableton / Cubase.
+- Les deux plug-ins n'ont pas été chargés dans un DAW réel, et la CI GitHub n'a pas tourné (quota macOS).

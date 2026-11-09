@@ -44,6 +44,10 @@ AuraPitchEditor::AuraPitchEditor (AuraPitchProcessor& p)
 
     // Vue du panneau de hauteur : MONITOR | GRAPH (au-dessus des deux vues)
     addChildComponent (graphEditor);
+    addChildComponent (detachedPanel);
+    graphEditor.onExpandToggle = [this] { setGraphExpanded (! isGraphExpanded()); };
+    detachedPanel.showButton.onClick   = [this] { if (graphWindow != nullptr) graphWindow->toFront (true); };
+    detachedPanel.returnButton.onClick = [this] { setGraphExpanded (false); };
     for (auto* b : { &viewMonitor, &viewGraph })
     {
         b->setClickingTogglesState (true);
@@ -100,6 +104,11 @@ AuraPitchEditor::AuraPitchEditor (AuraPitchProcessor& p)
 AuraPitchEditor::~AuraPitchEditor()
 {
     stopTimer();
+    if (graphWindow != nullptr)
+    {
+        pitchProcessor.graphWindowBounds = graphWindow->getBounds();
+        graphWindow.reset();
+    }
     setLookAndFeel (nullptr);
 }
 
@@ -124,7 +133,7 @@ void AuraPitchEditor::update (double dt)
     keyboard.refresh();
     graph.setScale (keyboard.activeMask(), keyboard.tonic());
     graphEditor.setScale (keyboard.activeMask(), keyboard.tonic());
-    if (graphView) graphEditor.tick (dt);
+    if (graphView || graphWindow != nullptr) graphEditor.tick (dt);
 
     // MIDI Target : notes tenues sur le clavier et la grille
     const bool midiOn = pitchProcessor.getState().getRawParameterValue (P::midiTarget)->load() > 0.5f;
@@ -146,10 +155,36 @@ void AuraPitchEditor::setGraphView (bool showGraph)
     viewGraph.setToggleState (showGraph, dontSendNotification);
     viewMonitor.setToggleState (! showGraph, dontSendNotification);
     graph.setVisible (! showGraph);
-    graphEditor.setVisible (showGraph);
-    if (showGraph) graphEditor.fitToNotes();
+    graphEditor.setVisible (showGraph || graphWindow != nullptr);
+    detachedPanel.setVisible (showGraph && graphWindow != nullptr);
+    if (showGraph && graphWindow == nullptr) graphEditor.fitToNotes();
     viewMonitor.toFront (false);
     viewGraph.toFront (false);
+}
+
+void AuraPitchEditor::setGraphExpanded (bool expanded)
+{
+    if (expanded == isGraphExpanded())
+        return;
+    if (expanded)
+    {
+        // La fermeture arrive pendant un rappel de la fenêtre elle-même : elle est détruite plus tard, hors de ce rappel.
+        graphWindow = std::make_unique<nextdsp::GraphWindow> (graphEditor, lnf, pitchProcessor.graphWindowBounds, this,
+            [safe = Component::SafePointer<AuraPitchEditor> (this)]
+            {
+                MessageManager::callAsync ([safe] { if (safe != nullptr) safe->setGraphExpanded (false); });
+            });
+        setGraphView (true);
+    }
+    else
+    {
+        pitchProcessor.graphWindowBounds = graphWindow->getBounds();
+        graphWindow.reset();
+        graphEditor.setDetached (false);
+        addChildComponent (graphEditor);
+        setGraphView (graphView);
+        resized();
+    }
 }
 
 nextdsp::Knob& AuraPitchEditor::getKnob (const String& id)
@@ -353,7 +388,9 @@ void AuraPitchEditor::resized()
     tuner.setBounds (viz.removeFromRight (jlimit (220, 380, viz.getWidth() / 3)));
     viz.removeFromRight (10);
     graph.setBounds (viz);
-    graphEditor.setBounds (viz);
+    detachedPanel.setBounds (viz);
+    if (graphWindow == nullptr)
+        graphEditor.setBounds (viz);
     {
         auto sel = viz.reduced (12, 5).removeFromTop (24).withTrimmedLeft (116).withWidth (124);
         viewMonitor.setBounds (sel.removeFromLeft (66));

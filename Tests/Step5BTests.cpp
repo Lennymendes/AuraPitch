@@ -632,10 +632,168 @@ static void testGraphEditorUI()
     check (img.isValid(), "rendu du GRAPH EDITOR");
     ed.reset();
 }
+//==================================================================================================================
+#if JUCE_LINUX || JUCE_WINDOWS
+namespace juce::detail { bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages); }
+static void pumpMessages() { for (int i = 0; i < 50; ++i) juce::detail::dispatchNextMessageOnSystemQueue (true); }
+#endif
+
+static void testExpandedView()
+{
+    std::printf ("\n[9] Étape 6 · GRAPH EDITOR agrandi : fenêtre dédiée, éditions, retour dans l'éditeur\n");
+    if (juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() == nullptr)
+    {
+        std::printf ("  pas d'écran (lancer sous xvfb-run) : test non exécuté\n");
+        check (false, "un écran est nécessaire pour ouvrir la fenêtre agrandie");
+        return;
+    }
+    using MK = juce::ModifierKeys;
+    const double fs = 48000;
+    FakePlayHead ph;
+    auto p = makeProcessor (fs, ph);
+    const auto x = phrase (fs);
+    p->setGraphCapture (true);
+    renderProcessor (*p, ph, x, fs, true);
+    p->setGraphCapture (false);
+    auto& model = p->getGraphModel();
+    check (model.getBlobs().size() == 4, "capture : 4 notes");
+    if (model.getBlobs().size() != 4) return;
+
+    std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
+    auto* editor = dynamic_cast<AuraPitchEditor*> (ed.get());
+    editor->setGraphView (true);
+    auto& ge = editor->getGraphEditor();
+    ge.showRange (kTimelineStart, 3.2, 62.0, 18.0);
+    const auto inlineBounds = ge.getBounds();
+    const float inlineRow = ge.rowHeight();
+
+    ge.expandButton.onClick();                                      // clic sur EXPAND
+    auto* win = editor->getGraphWindow();
+    check (editor->isGraphExpanded() && win != nullptr, "EXPAND : la fenêtre dédiée s'ouvre");
+    if (win == nullptr) return;
+    std::printf ("  fenêtre %d × %d, redimensionnable %s, sur le bureau %s ; GRAPH EDITOR %d × %d (dans l'éditeur : %d × %d), rangée %.1f px (%.1f)\n",
+                 win->getWidth(), win->getHeight(), win->isResizable() ? "oui" : "non", win->isOnDesktop() ? "oui" : "non",
+                 ge.getWidth(), ge.getHeight(), inlineBounds.getWidth(), inlineBounds.getHeight(), ge.rowHeight(), inlineRow);
+    check (win->getWidth() == nextdsp::GraphWindow::kDefaultWidth && win->getHeight() == nextdsp::GraphWindow::kDefaultHeight,
+           "taille par défaut 1200 × 800");
+    check (win->isResizable() && win->isOnDesktop(), "fenêtre de bureau redimensionnable");
+    check (ge.getTopLevelComponent() == win && ge.isDetached() && ge.expandButton.showsCollapseIcon(),
+           "le GRAPH EDITOR (le même objet) est dans la fenêtre, icône « réduire »");
+    check (ge.getWidth() > 2 * inlineBounds.getWidth() && ge.rowHeight() > 2.0f * inlineRow, "espace de travail agrandi");
+    check (editor->getDetachedPanel().isVisible() && ! editor->getGraph().isVisible(), "l'éditeur affiche le panneau de renvoi");
+    check (std::abs (ge.getViewStart() - kTimelineStart) < 1e-9 && std::abs (ge.getViewSpan() - 3.2) < 1e-9,
+           "la vue (début, durée) est conservée");
+
+    // éditions dans la grande fenêtre : note 3 un demi-ton plus haut (aimantée sur la gamme), scission de la note 4
+    auto& b = model.getBlobs();
+    const double before = b[2].targetPitch;
+    const auto c3 = juce::Point<float> (ge.xForTime (b[2].startTimeSec + 0.5 * b[2].durationSec), ge.yForMidi (b[2].targetPitch));
+    ge.mouseDown (mouseAt (ge, c3, MK (MK::leftButtonModifier)));
+    ge.mouseDrag (mouseAt (ge, c3.translated (0.0f, -2.0f * ge.rowHeight()), MK (MK::leftButtonModifier)));
+    ge.mouseUp (mouseAt (ge, c3.translated (0.0f, -2.0f * ge.rowHeight()), MK()));
+    const auto cut = juce::Point<float> (ge.xForTime (b[3].startTimeSec + 0.3), ge.yForMidi (b[3].targetPitch));
+    ge.mouseDown (mouseAt (ge, cut, MK (MK::rightButtonModifier)));
+    ge.mouseUp (mouseAt (ge, cut, MK()));
+    const double after = b[2].targetPitch;
+    std::printf ("  dans la fenêtre : note 3 %.2f -> %.2f ; clic droit -> %zu notes\n", before, after, b.size());
+    check (std::abs (after - std::round (after)) < 1e-9 && after > before + 1.0 && after < before + 3.0 && b.size() == 5,
+           "glisser (aimanté sur la gamme) et scinder dans la fenêtre agrandie");
+
+    win->setSize (1600, 1000);
+    check (ge.getWidth() == 1600 - 20 && ge.getHeight() == win->getContentComponent()->getHeight() - 20,
+           "redimensionnement : le GRAPH EDITOR suit la fenêtre");
+    win->setSize (1200, 800);
+    ge.followButton.setToggleState (false, juce::dontSendNotification);
+    {
+        juce::AudioBuffer<float> buf (2, 512);
+        buf.clear();
+        juce::MidiBuffer midi;
+        ph.seconds = kTimelineStart + 1.9;
+        p->processBlock (buf, midi);
+    }
+    ge.showRange (kTimelineStart + 0.1, 3.0, 62.0, 16.0);
+    ge.tick (1.0 / 60.0);
+    {
+        auto img = win->getContentComponent()->createComponentSnapshot (win->getContentComponent()->getLocalBounds(), true, 1.0f);
+        auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("aurapitch_graph_window.png");
+        file.deleteFile();
+        juce::FileOutputStream os (file);
+        juce::PNGImageFormat().writeImageToStream (img, os);
+        std::printf ("  capture : %s\n", file.getFullPathName().toRawUTF8());
+        auto img2 = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+        auto file2 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("aurapitch_graph_detached.png");
+        file2.deleteFile();
+        juce::FileOutputStream os2 (file2);
+        juce::PNGImageFormat().writeImageToStream (img2, os2);
+    }
+
+    // fermeture par le bouton de la fenêtre (rappel asynchrone), puis retour dans l'éditeur
+    const auto bigBounds = win->getBounds();
+    win->closeButtonPressed();
+#if JUCE_LINUX || JUCE_WINDOWS
+    pumpMessages();
+#else
+    editor->setGraphExpanded (false);
+#endif
+    check (! editor->isGraphExpanded() && editor->getGraphWindow() == nullptr, "fermer la fenêtre : retour dans l'éditeur");
+    check (ge.getParentComponent() == editor && ge.getBounds() == inlineBounds && ge.isVisible() && ! ge.isDetached()
+           && ! editor->getDetachedPanel().isVisible(), "le GRAPH EDITOR reprend sa place, icône « agrandir »");
+    check (model.getBlobs().size() == 5 && std::abs (b[2].targetPitch - after) < 1e-12, "les éditions faites dans la fenêtre sont conservées");
+
+    // le bouton de l'en-tête rouvre à la dernière position, puis le referme ; fermer l'éditeur avec la fenêtre ouverte
+    ge.expandButton.onClick();
+    check (editor->getGraphWindow() != nullptr && editor->getGraphWindow()->getBounds() == bigBounds, "réouverture à la dernière position");
+    ge.expandButton.onClick();
+    check (! editor->isGraphExpanded() && ge.getParentComponent() == editor, "bouton « réduire » de l'en-tête");
+    ge.expandButton.onClick();
+    ed.reset();                                                      // l'hôte ferme le plug-in, fenêtre ouverte
+    check (true, "fermeture de l'éditeur avec la fenêtre ouverte (sans fuite ni accès invalide)");
+
+    // le rendu entend les éditions faites dans la fenêtre
+    p->prepareToPlay (fs, 512);
+    const auto y = renderProcessor (*p, ph, x, fs, false);
+    std::vector<double> yd (y.begin(), y.end());
+    const double lat = (double) p->getLatencySamples() / fs;
+    const double target = b[2].targetPitch;
+    const auto o3 = meanAndComponent (pitchTrack (yd, fs, noteHz (target), kPhrase[2].start + 0.12 + lat, kPhrase[2].end - 0.08 + lat), kVibratoHz);
+    std::printf ("  rendu : note 3 -> %+5.2f c de la cible\n", o3.first);
+    check (std::abs (o3.first) < 0.5, "les éditions de la fenêtre agrandie sont rejouées");
+}
+#endif
+
+#if AURAPITCH_STEP5B_PLUGIN && defined (__linux__)
+#include <dlfcn.h>
+/** Xvfb nu (CI, banc local) n'a pas de gestionnaire de fenêtres : les atomes EWMH qu'un bureau a toujours n'existent
+    pas encore, et JUCE (qui les cherche sans les créer) enverrait une propriété d'atome nul à l'ouverture d'une fenêtre
+    de bureau. On les crée ici, avant que JUCE n'ouvre l'affichage. La connexion reste ouverte : Xvfb se réinitialise
+    (et oublie ses atomes) quand son dernier client se déconnecte. Sans écran, rien à faire. */
+static void prepareBareXServer()
+{
+    void* x11 = dlopen ("libX11.so.6", RTLD_LAZY | RTLD_LOCAL);
+    if (x11 == nullptr) return;
+    using OpenFn = void* (*) (const char*);
+    using InternFn = unsigned long (*) (void*, const char*, int);
+    auto open = (OpenFn) dlsym (x11, "XOpenDisplay");
+    auto intern = (InternFn) dlsym (x11, "XInternAtom");
+    if (open != nullptr && intern != nullptr)
+        if (void* d = open (nullptr))
+        {
+            for (const char* name : { "KWM_WIN_DECORATION", "WM_CHANGE_STATE", "WM_DELETE_WINDOW", "WM_PROTOCOLS", "WM_STATE",
+                                      "WM_TAKE_FOCUS", "_KDE_NET_WM_WINDOW_TYPE_OVERRIDE", "_MOTIF_WM_HINTS", "_NET_FRAME_EXTENTS",
+                                      "_NET_WM_ALLOWED_ACTIONS", "_NET_WM_MOVERESIZE", "_NET_WM_PING", "_NET_WM_STATE",
+                                      "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_HIDDEN", "_NET_WM_STATE_MAXIMIZED_HORZ",
+                                      "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_COMBO",
+                                      "_NET_WM_WINDOW_TYPE_NORMAL", "_NET_WORKAREA", "_WIN_HINTS" })
+                intern (d, name, 0);
+        }
+}
+#else
+static void prepareBareXServer() {}
 #endif
 
 int main (int argc, char** argv)
 {
+    prepareBareXServer();
 #if AURAPITCH_STEP5B_PLUGIN
     juce::ScopedJuceInitialiser_GUI juceInit;
 #endif
@@ -651,6 +809,7 @@ int main (int argc, char** argv)
 #if AURAPITCH_STEP5B_PLUGIN
     if (want ("plugin"))   testProcessor();
     if (want ("ui"))       testGraphEditorUI();
+    if (want ("expand"))   testExpandedView();
 #endif
     std::printf ("\n%d / %d vérifications passent\n", gChecks - gFailures, gChecks);
     return gFailures == 0 ? 0 : 1;

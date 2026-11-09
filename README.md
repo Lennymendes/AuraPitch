@@ -1,7 +1,13 @@
-# AuraPitch — NextDSP · AuraSuite
+# AuraSuite — NextDSP · AuraPitch + AuraKey
 
-Correction de hauteur et Pitch & Formant Shifter **VST3 / AU / Standalone**, de 44,1 kHz au **DXD 352,8 / 384 kHz**,
+Deux plug-ins **VST3** (ni Audio Unit, ni Standalone depuis l'étape 6), de 44,1 kHz au **DXD 352,8 / 384 kHz**,
 traitement 64 bits. C++20 · JUCE 8.0.15.
+
+- **AuraPitch** : correction de hauteur et Pitch & Formant Shifter (étapes 1 à 6, ci-dessous).
+- **AuraKey** : analyseur de tonalité — flux live (clé, confiance, cercle des quintes) et import de fichiers (clé,
+  tempo, accord, carte des sections majeures / mineures). Voir [plus bas](#aurakey).
+
+## AuraPitch
 
 ![AuraPitch](docs/screenshot.png)
 
@@ -34,6 +40,28 @@ traitement 64 bits. C++20 · JUCE 8.0.15.
 
 ![AuraPitch, GRAPH EDITOR](docs/screenshot-graph.png)
 
+- **Vue agrandie (étape 6)** : le bouton à double flèche de l'en-tête ouvre le GRAPH EDITOR dans une grande fenêtre
+  dédiée (1200 × 800, redimensionnable, plein écran de l'OS), avec sa vue, sa sélection et son zoom. Le bouton
+  réduire, la fermeture de la fenêtre ou Échap le ramènent dans le plug-in ; la fenêtre rouvre à sa dernière position.
+
+![AuraPitch, GRAPH EDITOR agrandi](docs/screenshot-graph-window.png)
+
+## AuraKey
+
+- **Live** : inséré sur une piste ou le bus master, AuraKey laisse passer l'audio **sans aucune modification**
+  (sortie identique à l'entrée au bit près) et en tire la tonalité : chromagramme polyphonique (pics spectraux,
+  accord du morceau estimé) puis l'**Auto-Key de l'étape 5A** (profils de Temperley, a posteriori bayésien sur les
+  24 clés). Affichage « B Minor (97%) », code Camelot, relative, accord, classes de hauteur. Mémoire 8 s (suit les
+  modulations), 30 s ou ∞ (tout le morceau), RESET. Aucune allocation, aucun verrou sur le thread audio.
+- **Cercle des quintes** : intensité = probabilité de chaque clé ; clé live lumineuse, clé du fichier en ambre ;
+  survol et clic pour épingler une clé (notes de la gamme, probabilité live).
+- **Import** : glisser un fichier sur le plug-in (ou IMPORT) — WAV, AIFF, FLAC, MP3 (et Ogg), 16/24/32 bits entiers ou
+  flottants, jusqu'au DXD 384 kHz. Décodage par blocs sur un fil de travail (le thread audio n'est jamais bloqué),
+  puis clé, **tempo** (BPM), accord et **carte des sections** (Viterbi sur une fenêtre glissante : modulations
+  détectées). L'analyse est sauvegardée avec le projet.
+
+![AuraKey](docs/screenshot-aurakey.png)
+
 ## Compiler
 
 ```bash
@@ -42,26 +70,27 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-| Système | Pré-requis | Produits (`build/AuraPitch_artefacts/Release/`) |
+| Système | Pré-requis | Produits |
 |---|---|---|
-| macOS 11+ (Apple Silicon et Intel) | Xcode 15 + CMake ≥ 3.22. Binaire universel par défaut | `VST3/AuraPitch.vst3`, `AU/AuraPitch.component`, `Standalone/AuraPitch.app` |
-| Windows 10+ | Visual Studio 2022 (C++), CMake ≥ 3.22 | `VST3/AuraPitch.vst3`, `Standalone/AuraPitch.exe` |
-| Linux | `libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev` | `VST3/AuraPitch.vst3`, `Standalone/AuraPitch` |
+| macOS 11+ (Apple Silicon et Intel) | Xcode 15 + CMake ≥ 3.22. Binaire universel par défaut | `build/AuraPitch_artefacts/Release/VST3/AuraPitch.vst3`, `build/AuraKey_artefacts/Release/VST3/AuraKey.vst3` |
+| Windows 10+ | Visual Studio 2022 (C++), CMake ≥ 3.22 | idem (`.vst3`) |
+| Linux | `libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev` | idem (`.vst3`) |
 
-Options : `-DJUCE_DIR=/chemin/JUCE` (JUCE local), `-DAURAPITCH_COPY_PLUGIN=ON` (copie dans
-`~/Library/Audio/Plug-Ins/VST3` et `Components` après compilation), `-DAURAPITCH_BUILD_PLUGIN=OFF` (noyau DSP et
-bancs seuls, sans JUCE). La cible `AuraPitchTests` construit les six bancs.
+Options : `-DJUCE_DIR=/chemin/JUCE` (JUCE local), `-DAURAPITCH_COPY_PLUGIN=ON` (copie des deux `.vst3` dans
+`~/Library/Audio/Plug-Ins/VST3` après compilation), `-DAURAPITCH_BUILD_PLUGIN=OFF` (noyaux DSP et bancs seuls, sans
+JUCE), `-DAURASUITE_BUILD_AURAKEY=OFF` (sans AuraKey), `-DAURAKEY_MP3_DECODER=OFF` (sans le décodeur MP3 logiciel de
+JUCE ; sous macOS, Core Audio lit encore les MP3). La cible `AuraPitchTests` construit les sept bancs.
 
-**AU** : depuis l'étape 5A, l'AU est un *Music Effect* (`aumf`, effet audio avec entrée MIDI) pour recevoir les
-notes du mode MIDI Target ; dans Logic, il s'insère comme effet et la piste MIDI se route vers lui (*side chain*
-MIDI). Une session qui contenait l'AU de type `aufx` des étapes précédentes doit le réinsérer.
+Depuis l'étape 6, plus aucun `.component` ni `.app` n'est produit. Une session Logic qui utilisait l'AU d'AuraPitch
+doit passer par un hôte VST3.
 
-**macOS, première ouverture** : le plug-in n'est pas signé par un compte développeur Apple (signature ad hoc). Si
-le DAW le refuse : `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/AuraPitch.component`
-(idem pour le `.vst3`).
+**macOS, première ouverture** : les plug-ins ne sont pas signés par un compte développeur Apple (signature ad hoc).
+Si le DAW les refuse : `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/AuraPitch.vst3` (idem pour
+`AuraKey.vst3`).
 
-**CI** : `.github/workflows/build.yml` compile macOS (universel), Windows x64 et Linux, lance `ctest`, valide l'AU
-avec `auval` et publie les archives ; une étiquette `v*` crée une release GitHub.
+**CI** : `.github/workflows/build.yml` compile macOS (universel), Windows x64 et Linux, lance `ctest` et publie les
+archives VST3 ; une étiquette `v*` crée une release GitHub. Le quota de minutes macOS du compte est épuisé : la
+validation de l'étape 6 a été faite localement (Linux, sanitizers).
 
 ## Bancs d'essai
 

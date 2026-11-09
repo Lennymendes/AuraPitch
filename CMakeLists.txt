@@ -1,5 +1,7 @@
-# AuraPitch — NextDSP · AuraSuite
-# Correction de hauteur / Pitch & Formant Shifter · VST3 + AU + Standalone · 44,1 kHz … DXD 384 kHz, 32/64 bits.
+# NextDSP · AuraSuite — AuraPitch + AuraKey
+#   AuraPitch : correction de hauteur / Pitch & Formant Shifter
+#   AuraKey   : analyseur de tonalité (flux live + import de fichiers), tempo, carte des sections
+# Format unique : VST3 (ni Audio Unit, ni Standalone). 44,1 kHz … DXD 384 kHz, traitement interne 64 bits.
 #
 #   cmake -B build -DCMAKE_BUILD_TYPE=Release        # JUCE 8.0.15 téléchargé automatiquement (GitHub)
 #   cmake --build build --config Release
@@ -7,10 +9,12 @@
 #
 # Options
 #   JUCE_DIR=/chemin/JUCE              JUCE local au lieu du téléchargement (alias : AURAPITCH_JUCE_DIR)
-#   AURAPITCH_BUILD_PLUGIN=OFF         noyau DSP + bancs seulement (aucune dépendance, pas de JUCE)
-#   AURAPITCH_COPY_PLUGIN=ON           copie le .vst3 / .component dans les dossiers système après la compilation
+#   AURAPITCH_BUILD_PLUGIN=OFF         noyaux DSP + bancs seulement (aucune dépendance, pas de JUCE)
+#   AURASUITE_BUILD_AURAKEY=OFF        sans AuraKey
+#   AURAPITCH_COPY_PLUGIN=ON           copie les .vst3 dans le dossier système après la compilation
 #
-# Produits (macOS) : build/AuraPitch_artefacts/Release/{VST3/AuraPitch.vst3, AU/AuraPitch.component, Standalone/AuraPitch.app}
+# Produits : build/AuraPitch_artefacts/Release/VST3/AuraPitch.vst3
+#            build/AuraKey_artefacts/Release/VST3/AuraKey.vst3
 cmake_minimum_required (VERSION 3.22)
 
 project (AuraPitch VERSION 1.0.0 LANGUAGES C CXX)
@@ -32,7 +36,8 @@ if (MSVC)
     set (CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")   # plug-in sans dépendance au runtime VC
 endif()
 
-option (AURAPITCH_BUILD_PLUGIN "Construire le plug-in JUCE (VST3 / AU / Standalone)" ON)
+option (AURAPITCH_BUILD_PLUGIN "Construire les plug-ins JUCE (VST3)" ON)
+option (AURASUITE_BUILD_AURAKEY "Construire AuraKey (analyseur de tonalité)" ON)
 option (AURAPITCH_BUILD_TESTS  "Construire les bancs d'essai" ON)
 option (AURAPITCH_COPY_PLUGIN  "Copier le plug-in dans les dossiers système après la compilation" OFF)
 set (JUCE_DIR "" CACHE PATH "Dossier JUCE local (vide : téléchargement de JUCE 8.0.15)")
@@ -67,11 +72,6 @@ if (AURAPITCH_BUILD_PLUGIN)
         FetchContent_MakeAvailable (JUCE)
     endif()
 
-    set (AURAPITCH_FORMATS VST3 Standalone)
-    if (APPLE)
-        list (APPEND AURAPITCH_FORMATS AU)
-    endif()
-
     juce_add_plugin (AuraPitch
         PRODUCT_NAME                "AuraPitch"
         VERSION                     ${PROJECT_VERSION}
@@ -82,9 +82,8 @@ if (AURAPITCH_BUILD_PLUGIN)
         DESCRIPTION                 "Pitch correction & formant shifter, 44.1 kHz to DXD 384 kHz"
         PLUGIN_MANUFACTURER_CODE    Nxds
         PLUGIN_CODE                 Aupt
-        FORMATS                     ${AURAPITCH_FORMATS}
+        FORMATS                     VST3                            # VST3 seulement
         VST3_CATEGORIES             Fx Pitch Shift
-        AU_MAIN_TYPE                kAudioUnitType_MusicEffect      # effet audio + entrée MIDI (MIDI Target)
         IS_SYNTH                    FALSE
         NEEDS_MIDI_INPUT            TRUE
         NEEDS_MIDI_OUTPUT           FALSE
@@ -101,7 +100,8 @@ if (AURAPITCH_BUILD_PLUGIN)
         Source/GUI/PitchDisplay.cpp
         Source/GUI/ScaleKeyboard.cpp
         Source/GUI/PluginEditor.cpp
-        Source/GUI/GraphEditor.cpp)
+        Source/GUI/GraphEditor.cpp
+        Source/GUI/GraphWindow.cpp)
 
     target_include_directories (AuraPitch PRIVATE Source)
 
@@ -169,4 +169,9 @@ if (AURAPITCH_BUILD_TESTS)
         add_test (NAME aurapitch_plugin_test COMMAND aurapitch_plugin_test)
         add_dependencies (AuraPitchTests aurapitch_plugin_test)
     endif()
+endif()
+
+#--- AuraKey ---------------------------------------------------------------------------------------------------------
+if (AURASUITE_BUILD_AURAKEY)
+    include (AuraKey/AuraKey.cmake)
 endif()

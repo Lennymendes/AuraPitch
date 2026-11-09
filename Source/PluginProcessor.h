@@ -1,5 +1,5 @@
 // AuraPitch — NextDSP · AuraSuite
-// PluginProcessor.h : enveloppe JUCE 8 d'AuraPitchEngine (VST3 / AU / Standalone).
+// PluginProcessor.h : enveloppe JUCE 8 d'AuraPitchEngine (VST3).
 //
 //   * double précision native : processBlock (float) et processBlock (double) passent par processTemplated<T> ;
 //     le moteur calcule toujours en 64 bits, seules les E/S changent de type ;
@@ -106,6 +106,9 @@ public:
     double getPlayheadSeconds() const noexcept { return playheadSeconds.load(); }
     bool isTransportPlaying() const noexcept   { return transportPlaying.load(); }
     double getBpm() const noexcept             { return transportBpm.load(); }
+
+    /** Étape 6 : position de la fenêtre agrandie du GRAPH EDITOR, retrouvée à la réouverture (fil message seulement). */
+    juce::Rectangle<int> graphWindowBounds;
 
     /** Notes MIDI tenues (bit n = note n), pour l'interface. */
     std::array<std::uint64_t, 2> getHeldMidiNotes() const noexcept;

@@ -12,6 +12,10 @@
 //     concurrente (souvent la relative, Si mineur / Ré majeur).
 //
 // Temps réel : aucune allocation ; addFrame() et analyse() sont O(1) / O(24 × 12).
+//
+// Étape 6 (AuraKey) : le même modèle reçoit aussi des chromagrammes polyphoniques (addPitchClassWeights), avec un débit
+// d'évidence réglable (setEvidenceRate), une mémoire glissante (decay) et les 24 probabilités a posteriori
+// (posteriors) pour le cercle des quintes. Les valeurs par défaut gardent le comportement de l'étape 5A.
 #pragma once
 
 #include <algorithm>
@@ -35,6 +39,45 @@ public:
     static constexpr double kNotesPerSecond = 4.0;
 
     void reset() noexcept { hist.fill (0.0); seconds = 0.0; }
+
+    /** Nombre de « notes » équivalentes par seconde écoutée (4 pour une voix ; plus bas pour un chromagramme). */
+    void setEvidenceRate (double notesPerSecond) noexcept { rate = std::max (1.0e-6, notesPerSecond); }
+
+    /** Une trame de chromagramme : poids des 12 classes de hauteur (normalisés ici), poids de la trame (durée × niveau),
+        durée écoutée. */
+    void addPitchClassWeights (const std::array<double, 12>& w, double weight, double dtSeconds) noexcept
+    {
+        double sum = 0.0;
+        for (double v : w) sum += std::max (0.0, v);
+        if (! (sum > 0.0) || ! (weight > 0.0) || ! std::isfinite (sum * weight))
+            return;
+        for (size_t i = 0; i < 12; ++i)
+            hist[i] += weight * std::max (0.0, w[i]) / sum;
+        seconds += dtSeconds;
+    }
+
+    /** Mémoire glissante : l'historique est multiplié par `factor` (0 … 1). */
+    void decay (double factor) noexcept
+    {
+        for (auto& v : hist) v *= factor;
+        seconds *= factor;
+    }
+
+    /** Probabilités a posteriori des 24 clés : index = mode × 12 + tonique (0 … 11 majeur, 12 … 23 mineur). */
+    void posteriors (std::array<double, 24>& out) const noexcept
+    {
+        double total = 0.0;
+        for (double v : hist) total += v;
+        if (total <= 0.0) { out.fill (1.0 / 24.0); return; }
+        double best = -1.0e300;
+        logLikelihoods (out, rate * seconds, total);
+        for (double v : out) best = std::max (best, v);
+        double sum = 0.0;
+        for (auto& v : out) { v = std::exp (v - best); sum += v; }
+        for (auto& v : out) v /= sum;
+    }
+
+    double getSeconds() const noexcept { return seconds; }
 
     /** Une trame voisée : hauteur (MIDI fractionnaire), clarté 0 … 1, niveau dBFS, durée de la trame. */
     void addFrame (double midi, double clarity, double levelDb, double dtSeconds) noexcept
@@ -62,21 +105,12 @@ public:
         if (total <= 0.0)
             return r;
 
-        const double n = kNotesPerSecond * seconds;
         std::array<double, 24> logPost {};
+        logLikelihoods (logPost, rate * seconds, total);
         double best = -1.0e300;
         int bestIdx = 0;
-        for (int mode = 0; mode < 2; ++mode)
-            for (int tonic = 0; tonic < 12; ++tonic)
-            {
-                const auto& prof = mode == 1 ? logMinor : logMajor;
-                double ll = 0.0;
-                for (int pc = 0; pc < 12; ++pc)
-                    ll += hist[(size_t) pc] / total * prof[(size_t) (((pc - tonic) % 12 + 12) % 12)];
-                const int idx = mode * 12 + tonic;
-                logPost[(size_t) idx] = n * ll;
-                if (logPost[(size_t) idx] > best) { best = logPost[(size_t) idx]; bestIdx = idx; }
-            }
+        for (int idx = 0; idx < 24; ++idx)
+            if (logPost[(size_t) idx] > best) { best = logPost[(size_t) idx]; bestIdx = idx; }
         double sum = 0.0;
         for (double v : logPost) sum += std::exp (v - best);
         r.key        = bestIdx % 12;
@@ -88,6 +122,19 @@ public:
     const std::array<double, 12>& histogram() const noexcept { return hist; }
 
 private:
+    void logLikelihoods (std::array<double, 24>& out, double n, double total) const noexcept
+    {
+        for (int mode = 0; mode < 2; ++mode)
+            for (int tonic = 0; tonic < 12; ++tonic)
+            {
+                const auto& prof = mode == 1 ? logMinor : logMajor;
+                double ll = 0.0;
+                for (int pc = 0; pc < 12; ++pc)
+                    ll += hist[(size_t) pc] / total * prof[(size_t) (((pc - tonic) % 12 + 12) % 12)];
+                out[(size_t) (mode * 12 + tonic)] = n * ll;
+            }
+    }
+
     static std::array<double, 12> logNormalised (std::array<double, 12> p) noexcept
     {
         double s = 0.0;
@@ -102,6 +149,7 @@ private:
     std::array<double, 12> logMinor = logNormalised ({ 0.712, 0.084, 0.474, 0.618, 0.049, 0.460, 0.105, 0.747, 0.404, 0.067, 0.133, 0.330 });
     std::array<double, 12> hist {};
     double seconds = 0.0;
+    double rate = kNotesPerSecond;
 };
 
 } // namespace aura::pitch

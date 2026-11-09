@@ -7,6 +7,7 @@
 #include "../PluginProcessor.h"
 #include "Controls.h"
 #include "GraphEditor.h"
+#include "GraphWindow.h"
 #include "NextDSPLookAndFeel.h"
 #include "PitchDisplay.h"
 #include "ScaleKeyboard.h"
@@ -32,6 +33,11 @@ public:
     /** Vue du panneau de hauteur : MONITOR (historique) ou GRAPH (éditeur de notes). */
     void setGraphView (bool showGraph);
     bool isGraphView() const noexcept { return graphView; }
+    /** Étape 6 : GRAPH EDITOR dans sa grande fenêtre (true) ou dans l'éditeur (false). */
+    void setGraphExpanded (bool expanded);
+    bool isGraphExpanded() const noexcept { return graphWindow != nullptr; }
+    nextdsp::GraphWindow* getGraphWindow() noexcept { return graphWindow.get(); }
+    nextdsp::GraphDetachedPanel& getDetachedPanel() noexcept { return detachedPanel; }
     nextdsp::Knob& getKnob (const juce::String& paramId);
 
     /** Auto-Key : clic sur le bouton (démarre l'écoute, ou l'arrête et applique le meilleur résultat). */
@@ -50,6 +56,7 @@ private:
 
     nextdsp::PitchGraph graph;
     nextdsp::GraphEditor graphEditor;
+    nextdsp::GraphDetachedPanel detachedPanel;
     juce::TextButton viewMonitor { "MONITOR" }, viewGraph { "GRAPH" };
     bool graphView = false;
     nextdsp::TunerArc tuner;
@@ -73,6 +80,9 @@ private:
     juce::String rateText, precisionText, latencyText;
     bool dxd = false, studio = false;
     double lastTick = 0.0;
+
+    // Déclarée en dernier : détruite avant le GraphEditor et le LookAndFeel qu'elle utilise.
+    std::unique_ptr<nextdsp::GraphWindow> graphWindow;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AuraPitchEditor)
 };

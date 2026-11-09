@@ -35,8 +35,46 @@ GraphEditor::GraphEditor (AuraPitchProcessor& p) : processor (p)
     followButton.setTooltip ("Follow the DAW playhead");
     zoomOut.onClick = [this] { zoomTime (1.5, viewStart + 0.5 * viewSpan); zoomPitch (1.25); };
     zoomIn.onClick  = [this] { zoomTime (1.0 / 1.5, viewStart + 0.5 * viewSpan); zoomPitch (0.8); };
-    for (auto* b : { &captureButton, &clearButton, &quantizeButton, &followButton, &zoomOut, &zoomIn })
+    expandButton.setTooltip ("Expand: open the GRAPH EDITOR in a large resizable window");
+    expandButton.onClick = [this] { if (onExpandToggle) onExpandToggle(); };
+    for (auto* b : std::initializer_list<Button*> { &captureButton, &clearButton, &quantizeButton, &followButton, &zoomOut, &zoomIn, &expandButton })
         addAndMakeVisible (b);
+}
+
+void GraphEditor::setDetached (bool d)
+{
+    detached = d;
+    expandButton.setCollapseIcon (d);
+    expandButton.setTooltip (d ? "Back to the plug-in window" : "Expand: open the GRAPH EDITOR in a large resizable window");
+    resized();
+    repaint();
+}
+
+void ExpandButton::paintButton (Graphics& g, bool highlighted, bool down)
+{
+    getLookAndFeel().drawButtonBackground (g, *this, findColour (TextButton::buttonColourId), highlighted, down);
+    // deux flèches diagonales (haut-droite et bas-gauche) ; réduire : pointes vers le centre
+    const auto r = getLocalBounds().toFloat().reduced (getHeight() * 0.27f);
+    const float a = r.getWidth() * 0.36f;
+    Path p;
+    auto arrow = [&] (Point<float> tip, Point<float> base, float sx, float sy)
+    {
+        p.startNewSubPath (base); p.lineTo (tip);
+        p.startNewSubPath (tip.translated (-sx * a, 0.0f)); p.lineTo (tip); p.lineTo (tip.translated (0.0f, -sy * a));
+    };
+    const auto c = r.getCentre();
+    if (collapse)
+    {
+        arrow (c.translated (1.5f, -1.5f), r.getTopRight(), -1.0f, 1.0f);
+        arrow (c.translated (-1.5f, 1.5f), r.getBottomLeft(), 1.0f, -1.0f);
+    }
+    else
+    {
+        arrow (r.getTopRight(), c.translated (1.5f, -1.5f), 1.0f, -1.0f);
+        arrow (r.getBottomLeft(), c.translated (-1.5f, 1.5f), -1.0f, 1.0f);
+    }
+    g.setColour (highlighted || down ? colours::cyan : colours::text.withAlpha (0.85f));
+    g.strokePath (p, PathStrokeType (1.5f, PathStrokeType::curved, PathStrokeType::rounded));
 }
 
 //==============================================================================================================
@@ -76,7 +114,8 @@ void GraphEditor::fitToNotes()
 void GraphEditor::resized()
 {
     auto h = getLocalBounds().reduced (12, 5).removeFromTop ((int) kHeader - 4);
-    h.removeFromLeft (248);                     // titre + sélecteur de vue MONITOR | GRAPH (placé par l'éditeur)
+    h.removeFromLeft (detached ? 120 : 248);    // titre (+ sélecteur de vue MONITOR | GRAPH, placé par l'éditeur)
+    expandButton.setBounds (h.removeFromRight (h.getHeight() + 4)); h.removeFromRight (8);
     followButton.setBounds (h.removeFromRight (58));   h.removeFromRight (5);
     quantizeButton.setBounds (h.removeFromRight (92)); h.removeFromRight (5);
     clearButton.setBounds (h.removeFromRight (50));    h.removeFromRight (5);
