@@ -67,13 +67,13 @@ int AuraPitchProcessor::latencyFor (pitch::TrackingMode mode) const noexcept
 }
 
 //==============================================================================================================
-void AuraPitchProcessor::processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer&)          { processTemplated (b, false); }
-void AuraPitchProcessor::processBlock (juce::AudioBuffer<double>& b, juce::MidiBuffer&)         { processTemplated (b, false); }
-void AuraPitchProcessor::processBlockBypassed (juce::AudioBuffer<float>& b, juce::MidiBuffer&)  { processTemplated (b, true); }
-void AuraPitchProcessor::processBlockBypassed (juce::AudioBuffer<double>& b, juce::MidiBuffer&) { processTemplated (b, true); }
+void AuraPitchProcessor::processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer& m)          { processTemplated (b, m, false); }
+void AuraPitchProcessor::processBlock (juce::AudioBuffer<double>& b, juce::MidiBuffer& m)         { processTemplated (b, m, false); }
+void AuraPitchProcessor::processBlockBypassed (juce::AudioBuffer<float>& b, juce::MidiBuffer& m)  { processTemplated (b, m, true); }
+void AuraPitchProcessor::processBlockBypassed (juce::AudioBuffer<double>& b, juce::MidiBuffer& m) { processTemplated (b, m, true); }
 
 template <typename T>
-void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, bool forceBypass) noexcept
+void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, juce::MidiBuffer& midi, bool forceBypass) noexcept
 {
     juce::ScopedNoDenormals noDenormals;
     const int numSamples = buffer.getNumSamples();
@@ -87,8 +87,51 @@ void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, bool fo
 
     const int nc = juce::jlimit (1, preparedChannels, juce::jmin (numIn, numOut, buffer.getNumChannels()));
     auto p = snapshot.read();
+    // Export hors ligne (bounce, freeze, rendu) : le mode Ultra est engagé d'office, même si l'utilisateur ne l'a pas
+    // activé. Le paramètre n'est pas modifié : au retour en temps réel le moteur reprend le réglage de l'utilisateur.
+    // La latence est la même dans les deux qualités : rien à annoncer à l'hôte, l'export reste aligné.
+    const bool offline = isNonRealtime();
+    p.ultra = p.ultra || offline;
+    offlineRender.store (offline, std::memory_order_relaxed);
+    ultraActive.store (p.ultra, std::memory_order_relaxed);
     if (forceBypass)
-        p.mix = 0.0;
+    {
+        p.mix = 0.0; p.throat = 1.0; p.doubler = 0.0;
+    }
+
+    // Timeline du DAW -> moteurs (GRAPH EDITOR). Sans position fiable : hors lecture (ni capture ni notes rejouées).
+    {
+        double seconds = 0.0;
+        bool playing = false;
+        if (auto* ph = getPlayHead())
+            if (auto pos = ph->getPosition())
+            {
+                playing = pos->getIsPlaying();
+                if (auto t = pos->getTimeInSeconds())       seconds = *t;
+                else if (auto smp = pos->getTimeInSamples()) seconds = (double) *smp / preparedRate.load();
+                else                                         playing = false;
+                if (auto bpm = pos->getBpm()) transportBpm = *bpm;
+            }
+        for (auto* e : { linked.get(), left.get(), right.get() })
+            e->setTimeline (seconds, playing);
+        playheadSeconds = seconds;
+        transportPlaying = playing;
+    }
+
+    // MIDI -> moteurs (horodaté dans ce bloc). Tous les canaux MIDI ; NoteOn de vélocité 0 = NoteOff.
+    for (const auto meta : midi)
+    {
+        const auto msg = meta.getMessage();
+        pitch::MidiTargetEvent ev;
+        if (msg.isNoteOn())                                         ev = { pitch::MidiTargetEvent::NoteOn, msg.getNoteNumber(), 0.0 };
+        else if (msg.isNoteOff (true))                              ev = { pitch::MidiTargetEvent::NoteOff, msg.getNoteNumber(), 0.0 };
+        else if (msg.isPitchWheel())                                ev = { pitch::MidiTargetEvent::PitchBend, 0, (msg.getPitchWheelValue() - 8192) / 8192.0 };
+        else if (msg.isAllNotesOff() || msg.isAllSoundOff())        ev = { pitch::MidiTargetEvent::AllNotesOff, 0, 0.0 };
+        else continue;
+        const int offset = juce::jlimit (0, juce::jmax (0, numSamples - 1), meta.samplePosition);
+        for (auto* e : { linked.get(), left.get(), right.get() })
+            e->addMidiEvent (ev, offset);
+    }
 
     linked->setParameters (p);
     left->setParameters (p);
@@ -134,7 +177,99 @@ void AuraPitchProcessor::processTemplated (juce::AudioBuffer<T>& buffer, bool fo
 }
 
 //==============================================================================================================
-void AuraPitchProcessor::timerCallback() { syncLatency(); }
+const pitch::AuraPitchEngine& AuraPitchProcessor::shownEngine() const noexcept
+{
+    return activeChannelMode.load() == (int) params::ChannelMode::DualMono ? *left : *linked;
+}
+
+void AuraPitchProcessor::startKeyDetection()
+{
+    for (auto* e : { linked.get(), left.get(), right.get() }) e->startKeyDetection();
+}
+
+void AuraPitchProcessor::stopKeyDetection()
+{
+    for (auto* e : { linked.get(), left.get(), right.get() }) e->stopKeyDetection();
+}
+
+bool AuraPitchProcessor::isKeyDetectionListening() const noexcept { return shownEngine().isKeyDetectionListening(); }
+
+pitch::AutoKeyDetector::Result AuraPitchProcessor::getKeyDetection() const noexcept { return shownEngine().getKeyDetection(); }
+
+std::array<std::uint64_t, 2> AuraPitchProcessor::getHeldMidiNotes() const noexcept { return shownEngine().getHeldMidiNotes(); }
+
+void AuraPitchProcessor::applyKey (int keyIndex, bool minor)
+{
+    auto set = [this] (const char* id, float value)
+    {
+        if (auto* prm = state.getParameter (id))
+        {
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (prm->convertTo0to1 (value));
+            prm->endChangeGesture();
+        }
+    };
+    set (params::key, (float) juce::jlimit (0, 11, keyIndex));
+    set (params::scale, (float) (minor ? (int) pitch::ScaleType::Minor : (int) pitch::ScaleType::Major));
+}
+
+//==============================================================================================================
+std::uint16_t AuraPitchProcessor::currentScaleMask() const
+{
+    const auto p = snapshot.read();
+    pitch::ScaleQuantizer q;
+    q.setKey (p.key);
+    q.setCustomStates (p.customNotes);
+    q.setScale (p.scale);
+    return q.getTargetMask();
+}
+
+void AuraPitchProcessor::setGraphCapture (bool on)
+{
+    graphCapture = on;
+    for (auto* e : { linked.get(), left.get(), right.get() }) e->setCapture (on);
+    if (! on)
+    {
+        pumpGraph (true);
+        graphEdited();          // la capture finie, les notes se rejouent
+    }
+}
+
+bool AuraPitchProcessor::pumpGraph (bool final)
+{
+    const bool dual = activeChannelMode.load() == (int) params::ChannelMode::DualMono;
+    auto& shown = dual ? *left : *linked;
+    captureBatch.clear();
+    shown.drainCapture ([this] (const pitch::CaptureFrame& f) { captureBatch.push_back (f); });
+    for (auto* e : { linked.get(), left.get(), right.get() })
+        if (e != &shown) e->drainCapture ([] (const pitch::CaptureFrame&) {});
+    graphModel.addFrames (captureBatch);
+    const bool changed = graphModel.segment (final, currentScaleMask());
+    if (changed && ! graphCapture.load())
+        graphEdited();
+    for (auto* e : { linked.get(), left.get(), right.get() }) e->collectGraphGarbage();
+    return changed;
+}
+
+void AuraPitchProcessor::graphEdited()
+{
+    {
+        auto bytes = graphModel.serialize();
+        const std::lock_guard<std::mutex> lock (graphStateLock);
+        graphStateBytes = std::move (bytes);
+    }
+    for (auto* e : { linked.get(), left.get(), right.get() })
+    {
+        e->publishGraph (graphModel.buildSnapshot());
+        e->collectGraphGarbage();
+    }
+}
+
+void AuraPitchProcessor::timerCallback()
+{
+    syncLatency();
+    pumpGraph (false);
+}
 
 void AuraPitchProcessor::syncLatency()
 {
@@ -155,6 +290,8 @@ AuraPitchProcessor::Status AuraPitchProcessor::getStatus() const noexcept
     s.latencySamples  = getLatencySamples();
     s.doublePrecision = getProcessingPrecision() == doublePrecision;
     s.studioActive    = studioActive.load();
+    s.ultraActive     = ultraActive.load() || snapshot.read().ultra;
+    s.offlineRender   = offlineRender.load();
     return s;
 }
 
@@ -186,6 +323,13 @@ void AuraPitchProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto tree = state.copyState();
     tree.setProperty ("pluginVersion", JucePlugin_VersionString, nullptr);
     tree.setProperty ("program", currentProgram, nullptr);
+    tree.setProperty ("editorScale", editorScale, nullptr);
+    // GRAPH EDITOR : notes éditées (binaire compact, base64)
+    {
+        const std::lock_guard<std::mutex> lock (graphStateLock);
+        if (graphStateBytes.size() > 12)        // en-tête seul = aucune note
+            tree.setProperty ("noteGraph", juce::MemoryBlock (graphStateBytes.data(), graphStateBytes.size()).toBase64Encoding(), nullptr);
+    }
     if (auto xml = tree.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -197,6 +341,16 @@ void AuraPitchProcessor::setStateInformation (const void* data, int sizeInBytes)
         {
             auto tree = juce::ValueTree::fromXml (*xml);
             currentProgram = tree.getProperty ("program", 0);
+            editorScale = juce::jlimit (0.5, 3.0, (double) tree.getProperty ("editorScale", 1.0));
+            graphModel.clear();
+            if (tree.hasProperty ("noteGraph"))
+            {
+                juce::MemoryBlock mb;
+                if (mb.fromBase64Encoding (tree.getProperty ("noteGraph").toString()))
+                    graphModel.deserialize (static_cast<const std::uint8_t*> (mb.getData()), mb.getSize());
+                tree.removeProperty ("noteGraph", nullptr);
+            }
+            graphEdited();
             state.replaceState (tree);
         }
 }

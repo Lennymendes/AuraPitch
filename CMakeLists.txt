@@ -1,5 +1,7 @@
-# AuraPitch — NextDSP · AuraSuite
-# Correction de hauteur / Pitch & Formant Shifter · VST3 + AU + Standalone · 44,1 kHz … DXD 384 kHz, 32/64 bits.
+# NextDSP · AuraSuite — AuraPitch + AuraKey
+#   AuraPitch : correction de hauteur / Pitch & Formant Shifter
+#   AuraKey   : analyseur de tonalité (flux live + import de fichiers), tempo, carte des sections
+# Format unique : VST3 (ni Audio Unit, ni Standalone). 44,1 kHz … DXD 384 kHz, traitement interne 64 bits.
 #
 #   cmake -B build -DCMAKE_BUILD_TYPE=Release        # JUCE 8.0.15 téléchargé automatiquement (GitHub)
 #   cmake --build build --config Release
@@ -7,10 +9,12 @@
 #
 # Options
 #   JUCE_DIR=/chemin/JUCE              JUCE local au lieu du téléchargement (alias : AURAPITCH_JUCE_DIR)
-#   AURAPITCH_BUILD_PLUGIN=OFF         noyau DSP + bancs seulement (aucune dépendance, pas de JUCE)
-#   AURAPITCH_COPY_PLUGIN=ON           copie le .vst3 / .component dans les dossiers système après la compilation
+#   AURAPITCH_BUILD_PLUGIN=OFF         noyaux DSP + bancs seulement (aucune dépendance, pas de JUCE)
+#   AURASUITE_BUILD_AURAKEY=OFF        sans AuraKey
+#   AURAPITCH_COPY_PLUGIN=ON           copie les .vst3 dans le dossier système après la compilation
 #
-# Produits (macOS) : build/AuraPitch_artefacts/Release/{VST3/AuraPitch.vst3, AU/AuraPitch.component, Standalone/AuraPitch.app}
+# Produits : build/AuraPitch_artefacts/Release/VST3/AuraPitch.vst3
+#            build/AuraKey_artefacts/Release/VST3/AuraKey.vst3
 cmake_minimum_required (VERSION 3.22)
 
 project (AuraPitch VERSION 1.0.0 LANGUAGES C CXX)
@@ -32,7 +36,8 @@ if (MSVC)
     set (CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")   # plug-in sans dépendance au runtime VC
 endif()
 
-option (AURAPITCH_BUILD_PLUGIN "Construire le plug-in JUCE (VST3 / AU / Standalone)" ON)
+option (AURAPITCH_BUILD_PLUGIN "Construire les plug-ins JUCE (VST3)" ON)
+option (AURASUITE_BUILD_AURAKEY "Construire AuraKey (analyseur de tonalité)" ON)
 option (AURAPITCH_BUILD_TESTS  "Construire les bancs d'essai" ON)
 option (AURAPITCH_COPY_PLUGIN  "Copier le plug-in dans les dossiers système après la compilation" OFF)
 set (JUCE_DIR "" CACHE PATH "Dossier JUCE local (vide : téléchargement de JUCE 8.0.15)")
@@ -67,11 +72,6 @@ if (AURAPITCH_BUILD_PLUGIN)
         FetchContent_MakeAvailable (JUCE)
     endif()
 
-    set (AURAPITCH_FORMATS VST3 Standalone)
-    if (APPLE)
-        list (APPEND AURAPITCH_FORMATS AU)
-    endif()
-
     juce_add_plugin (AuraPitch
         PRODUCT_NAME                "AuraPitch"
         VERSION                     ${PROJECT_VERSION}
@@ -82,11 +82,10 @@ if (AURAPITCH_BUILD_PLUGIN)
         DESCRIPTION                 "Pitch correction & formant shifter, 44.1 kHz to DXD 384 kHz"
         PLUGIN_MANUFACTURER_CODE    Nxds
         PLUGIN_CODE                 Aupt
-        FORMATS                     ${AURAPITCH_FORMATS}
+        FORMATS                     VST3                            # VST3 seulement
         VST3_CATEGORIES             Fx Pitch Shift
-        AU_MAIN_TYPE                kAudioUnitType_Effect
         IS_SYNTH                    FALSE
-        NEEDS_MIDI_INPUT            FALSE
+        NEEDS_MIDI_INPUT            TRUE
         NEEDS_MIDI_OUTPUT           FALSE
         IS_MIDI_EFFECT              FALSE
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
@@ -100,7 +99,11 @@ if (AURAPITCH_BUILD_PLUGIN)
         Source/GUI/Controls.cpp
         Source/GUI/PitchDisplay.cpp
         Source/GUI/ScaleKeyboard.cpp
-        Source/GUI/PluginEditor.cpp)
+        Source/GUI/PluginEditor.cpp
+        Source/GUI/GraphEditor.cpp
+        Source/GUI/GraphWindow.cpp
+        Source/GUI/SettingsPanel.cpp
+        Source/GUI/AuraCore.cpp)
 
     target_include_directories (AuraPitch PRIVATE Source)
 
@@ -129,7 +132,7 @@ if (AURAPITCH_BUILD_TESTS)
     add_custom_target (AuraPitchTests)
 
     # Étape 1 : détecteur, gamme, FIFO · Étape 2 : PSOLA, vocodeur Studio/DXD, formants, moteur complet
-    foreach (bench aurapitch_dsp_test:PitchDspSelfTest aurapitch_engine_test:Step2SelfTest)
+    foreach (bench aurapitch_dsp_test:PitchDspSelfTest aurapitch_engine_test:Step2SelfTest aurapitch_realvoice_test:RealVoiceSelfTest aurapitch_step5a_test:Step5ASelfTest aurapitch_lot1_test:Lot1Bench)
         string (REPLACE ":" ";" parts ${bench})
         list (GET parts 0 target)
         list (GET parts 1 source)
@@ -142,6 +145,22 @@ if (AURAPITCH_BUILD_TESTS)
     endforeach()
 
     # Étape 3 : le processeur JUCE (paramètres, presets, latence, 32/64 bits, double mono, bypass, état, éditeur)
+    # Étape 5B : GRAPH EDITOR. Avec le plug-in, le banc teste aussi le processeur (AudioPlayHead, état) ; sans, le
+    # moteur et le modèle seuls (c'est la version compilée sous ASan / UBSan / TSan).
+    if (AURAPITCH_BUILD_PLUGIN)
+        add_executable (aurapitch_step5b_test Tests/Step5BTests.cpp)
+        target_link_libraries (aurapitch_step5b_test PRIVATE AuraPitch aurapitch_dsp Threads::Threads)
+        target_include_directories (aurapitch_step5b_test PRIVATE Source $<TARGET_PROPERTY:AuraPitch,INCLUDE_DIRECTORIES>)
+        target_compile_definitions (aurapitch_step5b_test PRIVATE AURAPITCH_STEP5B_PLUGIN=1 $<TARGET_PROPERTY:AuraPitch,COMPILE_DEFINITIONS>)
+        target_compile_features (aurapitch_step5b_test PRIVATE cxx_std_20)
+    else()
+        add_executable (aurapitch_step5b_test Tests/Step5BTests.cpp)
+        target_link_libraries (aurapitch_step5b_test PRIVATE aurapitch_dsp Threads::Threads)
+        target_compile_options (aurapitch_step5b_test PRIVATE ${AURAPITCH_WARNINGS} $<$<CXX_COMPILER_ID:GNU>:-Wno-mismatched-new-delete>)
+    endif()
+    add_test (NAME aurapitch_step5b_test COMMAND aurapitch_step5b_test)
+    add_dependencies (AuraPitchTests aurapitch_step5b_test)
+
     if (AURAPITCH_BUILD_PLUGIN)
         add_executable (aurapitch_plugin_test Tests/PluginSelfTest.cpp)
         # Le banc se lie au code partagé du plug-in (JUCE déjà compilé dedans) et reprend ses en-têtes et définitions.
@@ -152,4 +171,9 @@ if (AURAPITCH_BUILD_TESTS)
         add_test (NAME aurapitch_plugin_test COMMAND aurapitch_plugin_test)
         add_dependencies (AuraPitchTests aurapitch_plugin_test)
     endif()
+endif()
+
+#--- AuraKey ---------------------------------------------------------------------------------------------------------
+if (AURASUITE_BUILD_AURAKEY)
+    include (AuraKey/AuraKey.cmake)
 endif()

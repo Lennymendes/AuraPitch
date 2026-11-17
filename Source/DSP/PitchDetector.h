@@ -17,6 +17,12 @@
 //      Une sifflante (s, ch, f), une plosive sourde (t, k, p) ou un souffle ont fEq de 3 à 10 kHz, une voyelle
 //      quelques centaines de Hz : la trame est déclarée non voisée et ne sera pas pitchée.
 //
+//   4. Suivi rapide (lot 1) : une fois la note trouvée par la fenêtre longue (2 périodes de la F0 la plus grave du
+//      registre, soit 13,5 ms de retard en Alto/Ténor et 20 ms en voix grave), la période est ré-estimée sur une
+//      fenêtre de 2,5 périodes de la note CHANTÉE, à fsR, dans ±3 % de l'estimation rapide précédente (±8 % au
+//      premier passage). Son retard est de 1,25 période (5,7 ms pour A3, 2,8 ms pour A4) : c'est elle qui suit le
+//      vibrato en Live ; la fenêtre longue garde la décision (note, voisement, octave).
+//
 // Temps réel : prepare() alloue (fenêtre maximale, 50 Hz) ; process(), setRange(), setInputType(), setHopSeconds()
 // et setConfig() n'allouent rien et ne prennent aucun verrou. Calculs internes en double.
 // Aucun en-tête JUCE (banc : Tests/PitchDspSelfTest.cpp).
@@ -62,6 +68,10 @@ struct PitchEstimate
     float        brightnessHz   = 0.0f;   // fréquence équivalente des aigus (détection des sifflantes)
     bool         voiced         = false;
     std::int64_t frameCentre    = 0;      // instant (échantillon d'entrée, horloge absolue) que décrit l'estimation
+    // Suivi rapide (fenêtre de 2,5 périodes de la note) : valable seulement si fastValid
+    bool         fastValid       = false;
+    double       fastFrequencyHz = 0.0;
+    std::int64_t fastCentre      = 0;
 };
 
 namespace detail
@@ -180,6 +190,7 @@ public:
         hopCounter   = 0;
         inputCounter = 0;
         latest       = PitchEstimate {};
+        fastPeriodR  = 0.0;
     }
 
     //--- réglages temps réel (aucune allocation) -----------------------------------------------------------------
@@ -208,6 +219,9 @@ public:
     }
 
     void setConfig (const Config& c) noexcept { config = c; }
+
+    /** Suivi rapide : longueur de la fenêtre en périodes de la note (2 … 4, défaut 2,5) ; 0 le coupe. */
+    void setFastWindowPeriods (double periods) noexcept { fastPeriods = periods <= 0.0 ? 0.0 : std::clamp (periods, 2.0, 4.0); }
 
     //--- traitement (thread audio) -------------------------------------------------------------------------------
     /** Traite un bloc mono. onEstimate (const PitchEstimate&, int sampleIndexInBlock) est appelé à chaque nouvelle
@@ -464,6 +478,67 @@ private:
                                && clarity < config.strongClarity;
 
         finish (est, est.frequencyHz, loud && inRange && periodic && ! sibilant);
+        analyseFast (periodA * (double) (1 << refineLog2));
+    }
+
+    /** Suivi rapide : période sur les dernières 2,5 périodes (fsR), autour de periodR (fenêtre longue). */
+    void analyseFast (double periodR) noexcept
+    {
+        if (! latest.voiced || fastPeriods <= 0.0 || ! (periodR > 4.0))
+        {
+            fastPeriodR = 0.0;
+            return;
+        }
+        const int WF = std::min (windowR, (int) std::ceil (fastPeriods * periodR) + 2);
+        double* y = frameR.data();
+        if (meanRemovedCopy (refineLpRing.last (WF), y, WF) <= 1.0e-24)
+        {
+            fastPeriodR = 0.0;
+            return;
+        }
+        double* P = prefixR.data();
+        P[0] = 0.0;
+        for (int j = 0; j < WF; ++j)
+            P[j + 1] = P[j] + y[j] * y[j];
+        auto nsdfF = [&] (int lag) noexcept
+        {
+            const double mm = (P[WF - lag] - P[0]) + (P[WF] - P[lag]);
+            return mm > 1.0e-30 ? 2.0 * crossCorrelation (y, WF, lag) / mm : 0.0;
+        };
+
+        // Autour de l'estimation rapide précédente si elle concorde avec la fenêtre longue, sinon autour de celle-ci.
+        const bool tracking = fastPeriodR > 0.0 && std::abs (fastPeriodR / periodR - 1.0) < 0.08;
+        for (int pass = tracking ? 0 : 1; pass < 2; ++pass)
+        {
+            const double centre = pass == 0 ? fastPeriodR : periodR;
+            const double span   = pass == 0 ? 0.03 : 0.08;
+            const int lo = std::max (2, (int) std::floor (centre * (1.0 - span)) - 1);
+            const int hi = std::min (WF - (int) std::ceil (0.9 * periodR), (int) std::ceil (centre * (1.0 + span)) + 1);
+            if (hi - lo < 2) break;
+
+            int best = -1;
+            double vPrev = nsdfF (lo - 1), vBest = -2.0, bestPrev = 0.0, bestNext = 0.0, v = nsdfF (lo);
+            for (int lag = lo; lag <= hi; ++lag)
+            {
+                const double vNext = nsdfF (lag + 1);
+                if (v > vBest) { vBest = v; best = lag; bestPrev = vPrev; bestNext = vNext; }
+                vPrev = v; v = vNext;
+            }
+            if (best > lo && best < hi && vBest >= config.clarityOff)
+            {
+                double peak = 0.0;
+                const double d = parabolicOffset (bestPrev, vBest, bestNext, peak);
+                fastPeriodR = (double) best + d;
+                const double scale = (double) (1 << refineLevel);
+                latest.fastValid       = true;
+                latest.fastFrequencyHz = refineRate / fastPeriodR;
+                latest.fastCentre      = inputCounter - 1
+                                         - (std::int64_t) std::llround ((double) HalfBandDecimator::kGroupDelay * (scale - 1.0)
+                                                                        + 0.5 * (double) (WF - 1) * scale);
+                return;
+            }
+        }
+        fastPeriodR = 0.0;
     }
 
     void finish (PitchEstimate& est, double frequency, bool voiced) noexcept
@@ -491,6 +566,8 @@ private:
     int hopA = 1, hopCounter = 0;
     double hopSeconds = 0.0015;
     std::int64_t inputCounter = 0;
+
+    double fastPeriods = 2.5, fastPeriodR = 0.0;
 
     F0Range       range { kDetectorMinHz, kDetectorMaxHz };
     Config        config;

@@ -163,7 +163,7 @@ Font LookAndFeel::getPopupMenuFont() { return font (14.0f); }
 void LookAndFeel::drawButtonBackground (Graphics& g, Button& b, const Colour&, bool highlighted, bool down)
 {
     const auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-    const bool on = b.getToggleState();
+    const bool on = b.getToggleState() || (bool) b.getProperties().getWithDefault ("forceLit", false);
     const auto accent = Colour ((uint32) (int64) b.getProperties().getWithDefault ("accent", (int64) colours::cyan.getARGB()));
     g.setColour (on ? accent.withAlpha (0.14f) : (highlighted ? colours::panelHi.brighter (0.05f) : colours::panelHi));
     g.fillRoundedRectangle (r, 6.0f);
@@ -175,7 +175,7 @@ void LookAndFeel::drawButtonText (Graphics& g, TextButton& b, bool, bool)
 {
     const auto accent = Colour ((uint32) (int64) b.getProperties().getWithDefault ("accent", (int64) colours::cyan.getARGB()));
     g.setFont (getTextButtonFont (b, b.getHeight()));
-    g.setColour (b.getToggleState() ? accent : colours::textDim);
+    g.setColour (b.getToggleState() || (bool) b.getProperties().getWithDefault ("forceLit", false) ? accent : colours::textDim);
     g.drawFittedText (b.getButtonText(), b.getLocalBounds().reduced (4, 0), Justification::centred, 1);
 }
 

@@ -19,7 +19,7 @@ ScaleKeyboard::ScaleKeyboard (AudioProcessorValueTreeState& s) : state (s)
 {
     lastShown.fill (-1);
     setRepaintsOnMouseActivity (true);
-    setTooltip ("Click: active / removed  -  Alt-click or right-click: bypass");
+    setTooltip ("Click: active / removed  -  Alt-click or right-click: bypass  -  top strip: sung notes (amber) and corrected notes (cyan)");
 }
 
 int ScaleKeyboard::tonic() const
@@ -75,9 +75,39 @@ void ScaleKeyboard::setNote (int pc, int stateIndex)
     }
 }
 
+void ScaleKeyboard::pushActivity (double inputMidi, double outputMidi) noexcept
+{
+    auto hit = [] (std::array<float, 12>& heat, double midi)
+    {
+        if (! std::isfinite (midi) || midi <= 0.0) return;
+        // réparti entre les deux notes voisines : une voix à mi-chemin allume les deux
+        const double fl = std::floor (midi), frac = midi - fl;
+        const int pc = (((int) fl % 12) + 12) % 12;
+        heat[(size_t) pc]             = jmax (heat[(size_t) pc], (float) (1.0 - frac));
+        heat[(size_t) ((pc + 1) % 12)] = jmax (heat[(size_t) ((pc + 1) % 12)], (float) frac);
+    };
+    hit (heatIn, inputMidi);
+    hit (heatOut, outputMidi);
+    heatDirty = true;
+}
+
+void ScaleKeyboard::tick (double dt)
+{
+    const float k = (float) std::exp (-dt / 1.2);       // ≈ 3 s pour s'éteindre
+    bool any = heatDirty;
+    for (auto* h : { &heatIn, &heatOut })
+        for (auto& v : *h)
+        {
+            if (v > 0.004f) any = true;
+            v = v > 0.004f ? v * k : 0.0f;
+        }
+    heatDirty = false;
+    if (any) repaint (getLocalBounds().removeFromTop ((int) kHeatStrip + 2));
+}
+
 Rectangle<float> ScaleKeyboard::keyBounds (int pc) const
 {
-    const auto r = getLocalBounds().toFloat().reduced (1.0f);
+    const auto r = getLocalBounds().toFloat().reduced (1.0f).withTrimmedTop (kHeatStrip);
     const float ww = r.getWidth() / 7.0f;
     if (! isBlack (pc))
         return { r.getX() + ww * (float) whiteIndex[pc], r.getY(), ww, r.getHeight() };
@@ -147,6 +177,16 @@ void ScaleKeyboard::paint (Graphics& g)
         const auto label = b.withTrimmedBottom (black ? 6.0f : 14.0f).removeFromBottom (14.0f);
         g.drawText (s == 1 ? String ("BYP") : String (names[pc]), label, Justification::centred);
 
+        if (((midiMask >> pc) & 1u) != 0)          // note MIDI tenue
+        {
+            g.setColour (colours::amber.withAlpha (0.22f));
+            g.fillRoundedRectangle (b, 4.0f);
+            g.setColour (colours::amber.withAlpha (0.35f));
+            g.drawRoundedRectangle (b.expanded (1.5f), 5.5f, 2.5f);
+            g.setColour (colours::amber);
+            g.drawRoundedRectangle (b, 4.0f, 1.2f);
+        }
+
         if (pc == key)
         {
             g.setColour (colours::text);
@@ -156,6 +196,29 @@ void ScaleKeyboard::paint (Graphics& g)
 
     for (int pc : { 0, 2, 4, 5, 7, 9, 11 }) drawKey (pc);
     for (int pc : { 1, 3, 6, 8, 10 })       drawKey (pc);
+
+    // Bandeau d'activité : 12 colonnes à l'aplomb des touches ; haut = entrée (ambre), bas = sortie (cyan)
+    const float cellW = (getLocalBounds().toFloat().reduced (1.0f).getWidth() / 7.0f) * 0.46f;
+    const float rowH = (kHeatStrip - 4.0f) * 0.5f;
+    for (int pc = 0; pc < 12; ++pc)
+    {
+        const float cx = keyBounds (pc).getCentreX();
+        const auto in  = Rectangle<float> (cx - cellW * 0.5f, 1.0f, cellW, rowH);
+        const auto out = in.translated (0.0f, rowH + 1.0f);
+        g.setColour (colours::panelHi.brighter (0.04f));
+        g.fillRoundedRectangle (in, 1.2f);
+        g.fillRoundedRectangle (out, 1.2f);
+        if (heatIn[(size_t) pc] > 0.004f)
+        {
+            g.setColour (colours::amber.withAlpha (jmin (1.0f, 0.15f + 0.85f * heatIn[(size_t) pc])));
+            g.fillRoundedRectangle (in, 1.2f);
+        }
+        if (heatOut[(size_t) pc] > 0.004f)
+        {
+            g.setColour (colours::cyan.withAlpha (jmin (1.0f, 0.15f + 0.85f * heatOut[(size_t) pc])));
+            g.fillRoundedRectangle (out, 1.2f);
+        }
+    }
 }
 
 void ScaleKeyboard::mouseDown (const MouseEvent& e)

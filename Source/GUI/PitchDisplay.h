@@ -5,6 +5,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <array>
+
 #include "../DSP/LockFreePitchFifo.h"
 #include "NextDSPLookAndFeel.h"
 
@@ -19,9 +21,18 @@ public:
 
     void push (const aura::pitch::PitchFrame& f, double sampleRate);
     void setScale (std::uint16_t activeMask, int tonic) { mask = activeMask; key = tonic; }
+    /** Notes MIDI tenues (mode MIDI Target) : leurs lignes de la grille s'allument. */
+    void setMidiNotes (const std::array<std::uint64_t, 2>& notes) { if (notes != midiNotes) { midiNotes = notes; repaint(); } }
     void tick (double dtSeconds);            // défilement et cadrage, une fois par image
 
+    /** FREEZE : l'affichage se fige (le son continue) pour inspecter une phrase ; la FIFO reste vidée. */
+    void setFrozen (bool shouldFreeze);
+    bool isFrozen() const noexcept { return frozen; }
+
     void paint (juce::Graphics&) override;
+    void resized() override;
+
+    juce::TextButton freezeButton { "FREEZE" };
 
 private:
     struct Sample { double t; float in, out, target; bool voiced; };
@@ -36,6 +47,8 @@ private:
     float viewCentre = 57.0f, wantedCentre = 57.0f;
     std::uint16_t mask = 0x0fff;
     int key = 0;
+    std::array<std::uint64_t, 2> midiNotes {};
+    bool frozen = false;
 };
 
 class TunerArc final : public juce::Component
