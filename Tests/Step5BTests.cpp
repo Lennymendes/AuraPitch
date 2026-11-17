@@ -685,7 +685,11 @@ static void testExpandedView()
     check (win->isResizable() && win->isOnDesktop(), "fenêtre de bureau redimensionnable");
     check (ge.getTopLevelComponent() == win && ge.isDetached() && ge.expandButton.showsCollapseIcon(),
            "le GRAPH EDITOR (le même objet) est dans la fenêtre, icône « réduire »");
-    check (ge.getWidth() * 2 > 3 * inlineBounds.getWidth() && ge.rowHeight() > 2.0f * inlineRow, "espace de travail agrandi (×1,5 en largeur, ×2 par rangée)");
+    // ×1,5 en largeur quand la fenêtre fait 1200 px ; sur un écran plus petit (runners de CI, 1024 px) la fenêtre est
+    // bornée par l'écran et l'éditeur intégré est lui-même large depuis le Lot 2 : on exige alors ×1,25.
+    const bool fullSize = expectW >= nextdsp::GraphWindow::kDefaultWidth;
+    check (ge.getWidth() * 100 > (fullSize ? 150 : 125) * inlineBounds.getWidth() && ge.rowHeight() > 2.0f * inlineRow,
+           "espace de travail agrandi (×1,5 en largeur — ×1,25 sur petit écran —, ×2 par rangée)");
     check (editor->getDetachedPanel().isVisible() && ! editor->getGraph().isVisible(), "l'éditeur affiche le panneau de renvoi");
     check (std::abs (ge.getViewStart() - kTimelineStart) < 1e-9 && std::abs (ge.getViewSpan() - 3.2) < 1e-9,
            "la vue (début, durée) est conservée");
